@@ -1,0 +1,32 @@
+# x402 payment-as-authentication.
+#
+# OpenAPI 3.0 has no native "402 challenge-response" security scheme type,
+# so we model it as an apiKey in the `PAYMENT-SIGNATURE` header with a rich
+# description. The actual flow is:
+#
+#   1. Client sends the request normally (no PAYMENT-SIGNATURE).
+#   2. Server responds 402 with a JSON body listing acceptable payment
+#      schemes (see X402ChallengeBody.yaml).
+#   3. Client submits the USDC payment on-chain (Base/Polygon/Solana).
+#   4. Client retries the original request with `PAYMENT-SIGNATURE` set to
+#      the payment proof (a signed EIP-3009 / EIP-2612 / Solana receipt).
+#   5. Server verifies the payment via the facilitator and serves the result.
+#
+# The payment IS the authentication — there are no API keys.
+type: apiKey
+in: header
+name: PAYMENT-SIGNATURE
+description: |
+  x402 payment proof. The header carries the cryptographic proof that the
+  Agent paid the required USDC to the server's receiving address on the
+  specified network.
+
+  **First request:** omit this header. You'll receive a 402 response with
+  payment instructions.
+
+  **Retry request:** include this header with the payment proof and you'll
+  receive the inference result.
+
+  Supported networks: Base, Base Sepolia, Polygon, Solana Devnet.
+  Typical price: $0.01 USDC per call (dynamic per-subnet pricing reads the
+  on-chain `minPriceUsdc` committed by the miner).

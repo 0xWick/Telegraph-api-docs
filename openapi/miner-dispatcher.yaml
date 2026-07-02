@@ -1,0 +1,73 @@
+openapi: 3.0.3
+info:
+  title: Telegraph Miner Dispatcher API
+  version: 1.0.0
+  description: |
+    Placeholder — full spec coming in Phase 2b.
+servers:
+  - url: https://your-stable-domain.com/miner-dispatcher
+    description: Telegraph Node
+components:
+  securitySchemes:
+    x402:
+      $ref: ../components/security/x402.yaml
+    internalSecret:
+      $ref: ../components/security/internalSecret.yaml
+  responses:
+    PaymentRequired:
+      description: Payment required — submit x402 USDC payment and retry.
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas/X402ChallengeBody.yaml
+    InternalServerError:
+      description: Unexpected internal server error.
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas/Error.yaml
+paths:
+  /healthz:
+    get:
+      operationId: getHealthz
+      summary: Dispatcher health check
+      description: Returns the dispatcher health status.
+      tags: [Discovery]
+      responses:
+        '200':
+          description: Dispatcher is healthy.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/x402-test:
+    get:
+      operationId: getX402Test
+      summary: Test the x402 payment flow
+      description: Verifies the x402 payment gate without calling a real subnet.
+      tags: [Discovery]
+      security:
+        - x402: []
+      responses:
+        '200':
+          description: Payment verified.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  message: { type: string, example: "Payment verified" }
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+tags:
+  - name: Discovery
+    description: Open discovery and health endpoints (no payment required).

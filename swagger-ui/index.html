@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Telegraph Protocol API — interactive OpenAPI documentation. Five specs covering the miner-dispatcher HTTP proxy, Engine + Daemon HTTP/WS, internal TSS bridge node-ops, and the legacy bittensor proxy." />
+  <title>Telegraph Protocol API · Swagger UI</title>
+  <link rel="icon" type="image/png" href="favicon-32x32.png" sizes="32x32" />
+  <link rel="icon" type="image/png" href="favicon-16x16.png" sizes="16x16" />
+  <link rel="stylesheet" type="text/css" href="swagger-ui.css" />
+  <link rel="stylesheet" type="text/css" href="index.css" />
+  <style>
+    /* Telegraph branding — minimal, in-repo, no external CSS dependency. */
+    html { box-sizing: border-box; }
+    *, *::before, *::after { box-sizing: inherit; }
+    body { margin: 0; background: #fafafa; }
+    .telegraph-topbar {
+      background: #0f172a;
+      color: #e2e8f0;
+      padding: 14px 24px;
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      border-bottom: 1px solid #1e293b;
+    }
+    .telegraph-topbar .brand {
+      font-weight: 700;
+      font-size: 18px;
+      letter-spacing: 0.2px;
+      color: #fff;
+      white-space: nowrap;
+    }
+    .telegraph-topbar .brand .accent { color: #38bdf8; }
+    .telegraph-topbar .tagline {
+      font-size: 13px;
+      color: #94a3b8;
+      white-space: nowrap;
+    }
+    .telegraph-topbar .spacer { flex: 1 1 auto; }
+    .telegraph-topbar a {
+      color: #38bdf8;
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 500;
+    }
+    .telegraph-topbar a:hover { text-decoration: underline; }
+    /* Swagger UI's own topbar (the green one) is hidden — we use ours instead. */
+    .swagger-ui .topbar { display: none !important; }
+    .swagger-ui .info { margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <div class="telegraph-topbar">
+    <span class="brand">Telegraph<span class="accent">.</span>API</span>
+    <span class="tagline">Permissionless marketplace for verifiable AI inference</span>
+    <span class="spacer"></span>
+    <a href="https://github.com/" id="repo-link" target="_blank" rel="noopener">GitHub Repo</a>
+    <a href="specs/miner-dispatcher.yaml" target="_blank" rel="noopener">Raw Specs</a>
+  </div>
+
+  <div id="swagger-ui"></div>
+
+  <script src="swagger-ui-bundle.js" charset="UTF-8"></script>
+  <script src="swagger-ui-standalone-preset.js" charset="UTF-8"></script>
+  <script>
+    (function () {
+      // Spec picker — Swagger UI's built-in `urls` option renders a dropdown
+      // at the top of the rendered spec. The first entry loads by default.
+      var specs = [
+        { name: "Miner Dispatcher (x402 Bittensor proxy)",  url: "specs/miner-dispatcher.yaml" },
+        { name: "Engine REST + WebSocket",                 url: "specs/engine.yaml" },
+        { name: "Daemon Dashboard Read API",               url: "specs/daemon.yaml" },
+        { name: "Internal Bridge / Node Ops (TSS)",        url: "specs/internal-bridge.yaml" },
+        { name: "Legacy Bittensor Proxy (deprecated)",     url: "specs/bittensor-legacy.yaml" }
+      ];
+
+      // Persist the chosen spec across reloads via the ?spec= query param.
+      var params = new URLSearchParams(window.location.search);
+      var requested = params.get("spec");
+      var defaultSpec = specs[0];
+      if (requested) {
+        var match = specs.find(function (s) { return s.url.indexOf(requested) !== -1; });
+        if (match) defaultSpec = match;
+      }
+
+      window.onload = function () {
+        var ui = SwaggerUIBundle({
+          urls: specs,
+          url: defaultSpec.url,
+          name: defaultSpec.name,
+          dom_id: "#swagger-ui",
+          deepLinking: true,
+          docExpansion: "list",
+          defaultModelsExpandDepth: 1,
+          defaultModelExpandDepth: 1,
+          filter: true,
+          showExtensions: true,
+          showCommonExtensions: true,
+          syntaxHighlight: { active: true, theme: "agate" },
+          presets: [
+            SwaggerUIBundle.presets.apis,
+            SwaggerUIStandalonePreset
+          ],
+          plugins: [
+            SwaggerUIBundle.plugins.DownloadUrl
+          ],
+          layout: "StandaloneLayout",
+          // Make the spec dropdown reflect the user's choice.
+          onComplete: function () {
+            var select = document.querySelector(".swagger-ui select.title");
+            if (select) {
+              // When the user picks a different spec, update the URL.
+              select.addEventListener("change", function (e) {
+                var chosen = e.target.options[e.target.selectedIndex].text;
+                var match = specs.find(function (s) { return s.name === chosen; });
+                if (match) {
+                  var key = match.url.replace("specs/", "").replace(".yaml", "");
+                  var u = new URL(window.location.href);
+                  u.searchParams.set("spec", key);
+                  window.history.replaceState({}, "", u.toString());
+                }
+              });
+            }
+          }
+        });
+        window.ui = ui;
+      };
+    })();
+  </script>
+</body>
+</html>

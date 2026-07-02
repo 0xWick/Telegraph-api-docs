@@ -1,0 +1,29 @@
+# Standard error envelope returned by every Telegraph 4xx/5xx response.
+# All error responses should reference this schema.
+type: object
+required:
+  - error
+properties:
+  error:
+    type: string
+    description: Human-readable error message.
+    example: "invalid request body: missing required field 'query'"
+  code:
+    type: string
+    description: |
+      Optional machine-readable error code. Not always present.
+      Common values: `invalid_request`, `not_found`, `unauthorized`,
+      `payment_required`, `rate_limited`, `internal_error`.
+    example: "invalid_request"
+  details:
+    type: object
+    description: Optional structured details about the error (field-level
+      validation failures, upstream errors, etc.).
+    additionalProperties: true
+    example:
+      field: query
+      issue: required
+  request_id:
+    type: string
+    description: Optional correlation ID for tracing.
+    example: "req_01HMZK8X2J9QABCDEF"

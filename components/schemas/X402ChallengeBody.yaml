@@ -1,0 +1,29 @@
+# The body of an HTTP 402 (Payment Required) response from an x402-gated
+# endpoint. Tells the Agent how much USDC to pay, on which network, and to
+# which receiving address. After paying on-chain, the Agent retries the
+# original request with the `PAYMENT-SIGNATURE` header carrying the payment
+# proof, and receives the inference result.
+type: object
+required:
+  - error
+  - accepts
+properties:
+  error:
+    type: string
+    description: Human-readable reason for the payment challenge.
+    example: "x402 payment required"
+  accepts:
+    type: array
+    description: |
+      Payment schemes the server will accept to fulfil the request. Each
+      entry names the scheme (always `x402`), the price in the smallest
+      token unit, the settlement network, and the receiving address.
+    items:
+      $ref: "./X402AcceptsItem.yaml"
+example:
+  error: "x402 payment required"
+  accepts:
+    - scheme: "x402"
+      price: "10000"
+      network: "base-sepolia"
+      payTo: "0x1234...abcd"

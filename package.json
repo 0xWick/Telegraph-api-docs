@@ -1,0 +1,20 @@
+{
+  "name": "telegraph-api-docs",
+  "version": "1.0.0",
+  "private": true,
+  "description": "OpenAPI specifications and Swagger UI for the Telegraph Protocol API surface.",
+  "license": "MIT",
+  "scripts": {
+    "lint": "spectral lint openapi/*.yaml",
+    "validate": "node scripts/validate-all.js",
+    "bundle": "node scripts/bundle-specs.js",
+    "build": "bash scripts/build-swagger-ui.sh",
+    "serve": "node scripts/serve-local.js"
+  },
+  "devDependencies": {
+    "@apidevtools/swagger-parser": "^10.1.0",
+    "@stoplight/spectral-cli": "^6.11.1",
+    "js-yaml": "^4.3.0",
+    "swagger-ui-dist": "^5.18.2"
+  }
+}

@@ -1,0 +1,47 @@
+name: validate
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Lint OpenAPI specs (Spectral)
+        run: npx spectral lint openapi/*.yaml
+
+      - name: Validate OpenAPI specs (swagger-parser)
+        run: node scripts/validate-all.js
+
+      - name: Build Swagger UI site
+        run: bash scripts/build-swagger-ui.sh
+
+      - name: Upload built site artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: swagger-ui-site
+          path: swagger-ui/
+          retention-days: 14

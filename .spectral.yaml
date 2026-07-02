@@ -1,0 +1,73 @@
+extends:
+  - spectral:oas
+
+rules:
+  # ------------------------------------------------------------------
+  # Built-in rule severity overrides (verified names only)
+  # ------------------------------------------------------------------
+  operation-operationId: error
+  operation-description: warn
+
+  # ------------------------------------------------------------------
+  # Telegraph API docs house rules (custom)
+  # ------------------------------------------------------------------
+
+  # Every operation MUST have an operationId (Swagger UI anchors + codegen).
+  telegraph-operation-operationId:
+    description: Every operation must have a unique operationId.
+    message: "Operation on {{path}} {{method}} is missing operationId."
+    severity: error
+    given:
+      - "$.paths.*[get,post,put,delete,patch]"
+    then:
+      field: operationId
+      function: truthy
+
+  # Every operation MUST have a summary (readable Swagger UI list).
+  telegraph-operation-summary:
+    description: Every operation must have a summary.
+    message: "Operation on {{path}} {{method}} is missing summary."
+    severity: error
+    given:
+      - "$.paths.*[get,post,put,delete,patch]"
+    then:
+      field: summary
+      function: truthy
+
+  # Every operation MUST have at least one tag (groups the Swagger UI list).
+  telegraph-operation-tags:
+    description: Every operation must have at least one tag.
+    message: "Operation on {{path}} {{method}} has no tags."
+    severity: error
+    given:
+      - "$.paths.*[get,post,put,delete,patch]"
+    then:
+      field: tags
+      function: schema
+      functionOptions:
+        schema:
+          type: array
+          minItems: 1
+
+  # The x402 payment header MUST be named PAYMENT-SIGNATURE (never X-Payment).
+  telegraph-no-x-payment-header:
+    description: The x402 payment header is named PAYMENT-SIGNATURE. The legacy X-Payment name must not appear.
+    message: "Found 'X-Payment' header reference — use 'PAYMENT-SIGNATURE' instead."
+    severity: error
+    given:
+      - "$..parameters[?(@.in == 'header')].name"
+    then:
+      function: pattern
+      functionOptions:
+        notMatch: "^X-Payment$"
+
+  # Request bodies should include an example for the Try-It-Out panel.
+  telegraph-request-body-example:
+    description: Request bodies should include an example.
+    message: "Request body on {{path}} {{method}} has no example — add one for the Swagger UI Try-It-Out panel."
+    severity: warn
+    given:
+      - "$.paths.*[post,put,patch].requestBody.content.application/json"
+    then:
+      field: example
+      function: defined

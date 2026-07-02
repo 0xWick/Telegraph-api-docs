@@ -1,0 +1,29 @@
+# Pagination metadata returned by paginated list endpoints.
+type: object
+required:
+  - page
+  - pageSize
+  - totalPages
+  - total
+properties:
+  page:
+    type: integer
+    minimum: 1
+    description: Current page number (1-indexed).
+    example: 1
+  pageSize:
+    type: integer
+    minimum: 1
+    maximum: 100
+    description: Number of items returned in this page.
+    example: 20
+  totalPages:
+    type: integer
+    minimum: 0
+    description: Total number of pages available.
+    example: 5
+  total:
+    type: integer
+    minimum: 0
+    description: Total number of items across all pages.
+    example: 93

@@ -1,0 +1,30 @@
+# A single acceptable payment scheme in an x402 challenge.
+type: object
+required:
+  - scheme
+  - price
+  - network
+  - payTo
+properties:
+  scheme:
+    type: string
+    description: Payment scheme identifier. Telegraph uses `x402`.
+    example: "x402"
+  price:
+    type: string
+    description: |
+      Price in the **smallest token unit** (e.g. micro-USDC = 10^-6 USDC).
+      Encoded as a decimal string to avoid JSON number precision loss.
+      $0.01 USDC = `10000` micro-USDC.
+    example: "10000"
+  network:
+    type: string
+    description: |
+      Settlement network identifier. Supported values:
+      `base-sepolia`, `base`, `polygon`, `solana-devnet`.
+    example: "base-sepolia"
+  payTo:
+    type: string
+    description: EVM address (or Solana address on Solana networks) that
+      receives the USDC payment.
+    example: "0xAbC1...1234"

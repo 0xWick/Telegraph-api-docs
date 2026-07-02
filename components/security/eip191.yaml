@@ -1,0 +1,27 @@
+# EIP-191 personal_sign wallet signature authentication.
+#
+# Used by transaction/validator write endpoints (the `Authorization` header)
+# and by the Engine WebSocket subscribe flow (the `wallet_verify` action).
+#
+# The flow:
+#   1. Client requests a nonce/challenge from the server.
+#   2. Client signs the challenge message with `personal_sign` (EIP-191).
+#   3. Client sends the signed payload in the `Authorization` header.
+#   4. Server recovers the signer address via `ecrecover` and checks it
+#      against the on-chain wallet registry.
+type: apiKey
+in: header
+name: Authorization
+description: |
+  EIP-191 `personal_sign` signature. The header value is the hex-encoded
+  signature of a server-issued challenge message (typically prefixed with
+  `\x19Ethereum Signed Message:\n<len>` per EIP-191).
+
+  The server recovers the signer address via `ecrecover` and matches it
+  against the registered wallet. Signatures are time-bound (24h expiry) and
+  replay-protected via nonces.
+
+  Used by: transaction writes (`POST /create`, `PUT /update`,
+  `POST /nodeIndex/update`), validator writes, and the Engine WebSocket
+  `wallet_verify` action (where it's sent as a WS message field rather than
+  an HTTP header, but the same EIP-191 scheme applies).
