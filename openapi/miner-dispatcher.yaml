@@ -3,10 +3,74 @@ info:
   title: Telegraph Miner Dispatcher API
   version: 1.0.0
   description: |
-    Placeholder — full spec coming in Phase 2b.
+    The **miner-dispatcher** is the x402-gated HTTP proxy that fronts all
+    registered Bittensor subnet integrations on a Telegraph node. It is the
+    primary "inference marketplace" surface: Agents pay USDC via the x402
+    protocol (HTTP 402 challenge-response) and receive verified inference
+    from the requested subnet.
+
+    ## Authentication — x402 Payment
+
+    No API keys. The payment IS the authentication.
+
+    1. Send your request normally (no `PAYMENT-SIGNATURE` header).
+    2. Receive `402 Payment Required` with a JSON body listing the acceptable
+       payment scheme, price (in micro-USDC), network (Base/Polygon/Solana),
+       and receiving address.
+    3. Submit the USDC payment on-chain.
+    4. Retry the original request with the `PAYMENT-SIGNATURE` header set to
+       the payment proof — receive the inference result.
+
+    Typical price: **$0.01 USDC** per call. Dynamic per-subnet pricing reads
+    the on-chain `minPriceUsdc` committed by each miner.
+
+    ## Discovery endpoints (no payment)
+
+    The `/healthz`, `/integrations`, `/integrations/yamls`, `/openapi.yaml`,
+    and `/openapi.json` endpoints are **free** (no x402) — they let Agents
+    discover what's available before paying.
+
+    ## Supported subnets
+
+    SN1, SN18, SN19, SN20, SN22, SN32, SN34, SN42, SN64, SN101, SN102 — plus
+    human-readable aliases (`zeus`, `nineteen`, `bounty`, `desearch`,
+    `itsai`, `bitmind`, `chutes`).
+  contact:
+    name: Telegraph Protocol
+    url: https://github.com/AnomalyFi/Telegraph
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
 servers:
   - url: https://your-stable-domain.com/miner-dispatcher
-    description: Telegraph Node
+    description: Telegraph node (production — replace with your node's domain)
+  - url: http://localhost:7044/miner-dispatcher
+    description: Local development node
+tags:
+  - name: Discovery
+    description: Free discovery, health, and OpenAPI-spec endpoints (no x402).
+  - name: Validation
+    description: Miner/collector YAML sandbox validation (uses X-Internal-Secret).
+  - name: x402 Test
+    description: Test endpoint that exercises the x402 payment flow without calling a real subnet.
+  - name: Dynamic Proxy
+    description: The generic x402-gated proxy to any registered subnet integration.
+  - name: bittensor-sn1-apex
+    description: Apex / Corcel (Bittensor SN1) — language chat completion.
+  - name: bittensor-sn18-zeus
+    description: Zeus Weather Forecasting (Bittensor SN18) — weather risk.
+  - name: bittensor-sn19-nineteen
+    description: Nineteen AI (Bittensor SN19) — multimodal generation (text/image/avatar).
+  - name: bittensor-sn20-bounty
+    description: Bounty / GoGoAgent (Bittensor SN20) — task-completion chat.
+  - name: bittensor-sn22-desearch
+    description: DeSearch (Bittensor SN22) — AI web + Twitter search.
+  - name: bittensor-sn32-itsai
+    description: ItsAI (Bittensor SN32) — AI-text authenticity detection.
+  - name: bittensor-sn34-bitmind
+    description: BitMind (Bittensor SN34) — deepfake media detection.
+  - name: bittensor-sn64-chutes
+    description: Chutes (Bittensor SN64) — high-performance LLM chat completion.
 components:
   securitySchemes:
     x402:
@@ -20,22 +84,337 @@ components:
         application/json:
           schema:
             $ref: ../components/schemas/X402ChallengeBody.yaml
+    BadRequest:
+      description: The request was malformed (invalid JSON, missing required field, bad parameter).
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas/Error.yaml
+          example:
+            error: "invalid request body: missing required field 'query'"
+            code: invalid_request
+    Unauthorized:
+      description: The `X-Internal-Secret` header was missing or did not match.
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas/Error.yaml
+          example:
+            error: "unauthorized: invalid or missing X-Internal-Secret"
+            code: unauthorized
+    NotFound:
+      description: The requested resource (subnet, integration, request log entry) was not found.
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas/Error.yaml
+          example:
+            error: "subnet not found: 999"
+            code: not_found
+    BadGateway:
+      description: The upstream subnet returned an error or was unreachable.
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas/Error.yaml
+          example:
+            error: "subnet upstream error: 503 from zeus"
+            code: upstream_error
     InternalServerError:
       description: Unexpected internal server error.
       content:
         application/json:
           schema:
             $ref: ../components/schemas/Error.yaml
+  parameters:
+    SubnetPath:
+      name: subnet
+      in: path
+      required: true
+      description: |
+        Bittensor subnet identifier. Accepts either the numeric subnet ID
+        (`1`, `18`, `19`, `20`, `22`, `32`, `34`, `42`, `64`, `101`, `102`)
+        or a human-readable alias (`zeus`=`18`, `nineteen`=`19`, `bounty`=`20`,
+        `desearch`=`22`, `itsai`=`32`, `bitmind`=`34`, `chutes`=`64`).
+      schema:
+        type: string
+        example: "18"
+    ProxyPath:
+      name: proxyPath
+      in: path
+      required: true
+      description: |
+        The sub-endpoint path to forward to the upstream subnet, including
+        the leading slash. Example: `/chat`, `/predict`, `/chat/completions`.
+      schema:
+        type: string
+        example: "/predict"
+  schemas:
+    ChatMessage:
+      type: object
+      required: [role, content]
+      properties:
+        role:
+          type: string
+          enum: [system, user, assistant]
+          description: The role of the message author.
+        content:
+          type: string
+          description: The message content.
+      description: A single chat message (OpenAI-compatible).
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+      description: Dispatcher health status.
+    IntegrationDTO:
+      type: object
+      description: A currently-registered miner/subnet integration (hot-loaded from YAML).
+      properties:
+        id:
+          type: string
+          description: Internal integration ID.
+        slug:
+          type: string
+          description: URL-safe slug (e.g. `bittensor-sn18-zeus`).
+        name:
+          type: string
+          description: Human-readable name.
+        kind:
+          type: string
+          description: Integration kind (e.g. `bittensor`).
+        protocol:
+          type: string
+          description: Wire protocol (e.g. `rest`).
+        base_url:
+          type: string
+          description: Upstream base URL the dispatcher proxies to.
+        endpoints:
+          type: array
+          description: List of exposed endpoints with their schemas.
+          items:
+            type: object
+        signal_mapping:
+          type: object
+          description: How upstream responses map to Telegraph signals (label_field, confidence_field, etc.).
+        supported_intents:
+          type: array
+          items:
+            type: string
+          description: Intent IDs this integration serves (e.g. `CHAT_COMPLETION`).
+        cost_per_call:
+          type: string
+          description: Human-readable cost (e.g. `$0.01 USDC`).
+        capabilities:
+          type: array
+          items:
+            type: string
+          description: Capability tags (e.g. `language`, `weather`, `multimodal`).
+    ValidateRequest:
+      type: object
+      required: [yaml, api_key]
+      properties:
+        yaml:
+          type: string
+          description: The full miner integration YAML text to validate.
+        api_key:
+          type: string
+          description: The upstream API key to sandbox-test against the YAML's endpoints.
+      description: Request body for POST /validate.
+    ValidateResponse:
+      type: object
+      required: [valid, api_key_stored]
+      properties:
+        valid:
+          type: boolean
+          description: Whether the YAML + API key passed full validation.
+        slug:
+          type: string
+          description: The slug derived from the YAML (present on success).
+        name:
+          type: string
+          description: The name derived from the YAML (present on success).
+        errors:
+          type: array
+          items:
+            type: string
+          description: List of validation error messages (present on failure).
+        results:
+          type: array
+          description: Per-endpoint sandbox test results.
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              method:
+                type: string
+              status:
+                type: integer
+              success:
+                type: boolean
+              error:
+                type: string
+              latency_ms:
+                type: integer
+        api_key_stored:
+          type: boolean
+          description: Whether the API key was persisted to the `miner_api_keys` table (true only on full success).
+      description: Response from POST /validate.
+    ValidateCollectorRequest:
+      type: object
+      required: [yaml]
+      properties:
+        yaml:
+          type: string
+          description: The full collector YAML text to validate (schema-only, no HTTP testing).
+      description: Request body for POST /validate/collector.
+    ValidateCollectorResponse:
+      type: object
+      required: [valid, slug, name, errors]
+      properties:
+        valid:
+          type: boolean
+        slug:
+          type: string
+        name:
+          type: string
+        errors:
+          type: array
+          items:
+            type: string
+      description: Response from POST /validate/collector.
 paths:
+  # ------------------------------------------------------------------
+  # Discovery (free, no x402)
+  # ------------------------------------------------------------------
   /healthz:
     get:
       operationId: getHealthz
       summary: Dispatcher health check
-      description: Returns the dispatcher health status.
+      description: Returns the dispatcher health status. Free (no payment).
       tags: [Discovery]
       responses:
         '200':
           description: Dispatcher is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+              example:
+                status: ok
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /integrations:
+    get:
+      operationId: listIntegrations
+      summary: List all registered integrations
+      description: |
+        Returns all currently hot-registered miner/subnet integrations as
+        DTOs (id, slug, kind, protocol, endpoints, schemas, signal mapping,
+        supported intents). Free (no payment) — used by Agents to discover
+        what's available before paying.
+      tags: [Discovery]
+      responses:
+        '200':
+          description: List of integrations.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/IntegrationDTO'
+              example:
+                - id: zeus
+                  slug: bittensor-sn18-zeus
+                  name: Zeus Weather Forecasting
+                  kind: bittensor
+                  protocol: rest
+                  base_url: https://api.zeus.predict
+                  cost_per_call: $0.01 USDC
+                  capabilities: [weather]
+                  supported_intents: [WEATHER_FORECAST]
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /integrations/yamls:
+    get:
+      operationId: listIntegrationYamls
+      summary: List raw integration YAMLs
+      description: Returns the raw YAML text of every registered integration, keyed by slug. Free (no payment).
+      tags: [Discovery]
+      responses:
+        '200':
+          description: Map of slug → raw YAML text.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: string
+                description: Map of integration slug to its raw YAML text.
+              example:
+                bittensor-sn18-zeus: "slug: bittensor-sn18-zeus\nname: Zeus..."
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /openapi.yaml:
+    get:
+      operationId: getOpenApiYaml
+      summary: Dynamically generated OpenAPI spec (YAML)
+      description: |
+        Returns a dynamically-generated OpenAPI 3.0 YAML spec built from the
+        currently-registered integrations. This is the **live** spec — it
+        reflects whatever integrations are hot-loaded right now. Free.
+      tags: [Discovery]
+      responses:
+        '200':
+          description: OpenAPI 3.0 YAML spec.
+          content:
+            application/yaml:
+              schema:
+                type: string
+                description: OpenAPI 3.0 YAML document.
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /openapi.json:
+    get:
+      operationId: getOpenApiJson
+      summary: Dynamically generated OpenAPI spec (JSON)
+      description: JSON variant of `/openapi.yaml` — the live, dynamically-generated spec.
+      tags: [Discovery]
+      responses:
+        '200':
+          description: OpenAPI 3.0 JSON spec.
+          content:
+            application/json:
+              schema:
+                type: object
+                description: OpenAPI 3.0 JSON document.
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ------------------------------------------------------------------
+  # x402 test
+  # ------------------------------------------------------------------
+  /v1/x402-test:
+    get:
+      operationId: getX402TestGet
+      summary: Test the x402 payment flow (GET)
+      description: |
+        Verifies the x402 payment gate without calling a real subnet. Only
+        registered when x402 is enabled. Use this to confirm your payment
+        client + facilitator wiring is correct end-to-end.
+      tags: [x402 Test]
+      security:
+        - x402: []
+      responses:
+        '200':
+          description: Payment verified — the gate is working.
           content:
             application/json:
               schema:
@@ -44,14 +423,24 @@ paths:
                   status:
                     type: string
                     example: ok
+                  message:
+                    type: string
+                    example: Payment verified
+                  x402_test:
+                    type: boolean
+                    example: true
+                  endpoint:
+                    type: string
+                    example: /v1/x402-test
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
         '500':
           $ref: '#/components/responses/InternalServerError'
-  /v1/x402-test:
-    get:
-      operationId: getX402Test
-      summary: Test the x402 payment flow
-      description: Verifies the x402 payment gate without calling a real subnet.
-      tags: [Discovery]
+    post:
+      operationId: getX402TestPost
+      summary: Test the x402 payment flow (POST)
+      description: POST variant of the x402 test endpoint — same behaviour.
+      tags: [x402 Test]
       security:
         - x402: []
       responses:
@@ -63,11 +452,1552 @@ paths:
                 type: object
                 properties:
                   status: { type: string, example: ok }
-                  message: { type: string, example: "Payment verified" }
+                  message: { type: string, example: Payment verified }
+                  x402_test: { type: boolean, example: true }
+                  endpoint: { type: string, example: /v1/x402-test }
         '402':
           $ref: '#/components/responses/PaymentRequired'
         '500':
           $ref: '#/components/responses/InternalServerError'
-tags:
-  - name: Discovery
-    description: Open discovery and health endpoints (no payment required).
+
+  # ------------------------------------------------------------------
+  # Generic dynamic proxy (covers any subnet, incl. SN42/SN101/SN102)
+  # ------------------------------------------------------------------
+  /v1/{subnet}/{proxyPath}:
+    parameters:
+      - $ref: '#/components/parameters/SubnetPath'
+      - $ref: '#/components/parameters/ProxyPath'
+    get:
+      operationId: proxyToSubnetGet
+      summary: Dynamic proxy to a subnet (GET)
+      description: |
+        The core x402-gated dynamic proxy. Forwards the method, path, query
+        params, body, and headers to the upstream subnet client and returns
+        its response. Each request is logged asynchronously to the
+        `subnet_requests` table.
+
+        Use this generic form for subnets whose specific endpoints aren't
+        individually documented below (e.g. SN42 search, SN101 search, SN102
+        chat) — pass the subnet ID/alias and the sub-endpoint path.
+
+        **Price:** dynamic — reads the on-chain `minPriceUsdc` committed by
+        the miner (default $0.01 USDC).
+      tags: [Dynamic Proxy]
+      security:
+        - x402: []
+      responses:
+        '200':
+          description: The upstream subnet's response (JSON or raw bytes).
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Upstream-defined response payload.
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+    post:
+      operationId: proxyToSubnetPost
+      summary: Dynamic proxy to a subnet (POST)
+      description: POST variant of the generic dynamic proxy — same semantics.
+      tags: [Dynamic Proxy]
+      security:
+        - x402: []
+      parameters:
+        - $ref: '#/components/parameters/SubnetPath'
+        - $ref: '#/components/parameters/ProxyPath'
+      requestBody:
+        description: The body to forward to the upstream subnet (JSON or multipart).
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+            example:
+              query: example search term
+              limit: 10
+          multipart/form-data:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: The upstream subnet's response.
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Upstream-defined response payload.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+    put:
+      operationId: proxyToSubnetPut
+      summary: Dynamic proxy to a subnet (PUT)
+      description: PUT variant of the generic dynamic proxy.
+      tags: [Dynamic Proxy]
+      security:
+        - x402: []
+      parameters:
+        - $ref: '#/components/parameters/SubnetPath'
+        - $ref: '#/components/parameters/ProxyPath'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+            example: { field: "updated value" }
+      responses:
+        '200':
+          description: The upstream subnet's response.
+          content:
+            application/json:
+              schema: { type: object }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+    delete:
+      operationId: proxyToSubnetDelete
+      summary: Dynamic proxy to a subnet (DELETE)
+      description: DELETE variant of the generic dynamic proxy.
+      tags: [Dynamic Proxy]
+      security:
+        - x402: []
+      parameters:
+        - $ref: '#/components/parameters/SubnetPath'
+        - $ref: '#/components/parameters/ProxyPath'
+      responses:
+        '200':
+          description: The upstream subnet's response.
+          content:
+            application/json:
+              schema: { type: object }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+    patch:
+      operationId: proxyToSubnetPatch
+      summary: Dynamic proxy to a subnet (PATCH)
+      description: PATCH variant of the generic dynamic proxy.
+      tags: [Dynamic Proxy]
+      security:
+        - x402: []
+      parameters:
+        - $ref: '#/components/parameters/SubnetPath'
+        - $ref: '#/components/parameters/ProxyPath'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+            example: { op: "replace", path: "/status", value: "active" }
+      responses:
+        '200':
+          description: The upstream subnet's response.
+          content:
+            application/json:
+              schema: { type: object }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  # ------------------------------------------------------------------
+  # SN1 — Apex / Corcel — language chat
+  # ------------------------------------------------------------------
+  /v1/1/chat:
+    post:
+      operationId: bittensor_sn1_apex_chat
+      summary: Apex / Corcel (Bittensor SN1) — POST /chat
+      description: Submit a chat completion request to Bittensor SN1 via Corcel.
+      tags: [bittensor-sn1-apex]
+      security:
+        - x402: []
+      x-telegraph:
+        payment: x402
+        slug: bittensor-sn1-apex
+        subnet_id: "1"
+        signal_mapping:
+          type: language_response
+          label_field: choices
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [messages]
+              properties:
+                max_tokens:
+                  type: integer
+                  minimum: 1
+                messages:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/ChatMessage'
+                model:
+                  type: string
+                temperature:
+                  type: number
+                  minimum: 0
+                  maximum: 2
+            example:
+              model: corcel-v1
+              messages:
+                - role: system
+                  content: You are a helpful assistant.
+                - role: user
+                  content: Summarize the latest Bitcoin news.
+              max_tokens: 256
+              temperature: 0.7
+      responses:
+        '200':
+          description: Successful inference response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  choices:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        message:
+                          type: object
+                          properties:
+                            content: { type: string }
+                            role: { type: string }
+                  id: { type: string }
+              example:
+                id: chatcmpl-abc123
+                choices:
+                  - message:
+                      role: assistant
+                      content: Bitcoin held steady...
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  # ------------------------------------------------------------------
+  # SN18 — Zeus Weather Forecasting
+  # ------------------------------------------------------------------
+  /v1/18/predict:
+    get:
+      operationId: bittensor_sn18_zeus_predict
+      summary: Zeus Weather Forecasting (Bittensor SN18) — GET /predict
+      description: |
+        Request a weather forecast. Incoming query params use Telegraph
+        naming (`lat`, `lon`); the `param_map` in the integration YAML
+        translates them to the Zeus upstream convention (`latitude`,
+        `longitude`).
+      tags: [bittensor-sn18-zeus]
+      security:
+        - x402: []
+      x-telegraph:
+        payment: x402
+        slug: bittensor-sn18-zeus
+        subnet_id: "18"
+        signal_mapping:
+          type: weather_risk
+          label_field: risk_level
+          confidence_field: storm_probability
+      parameters:
+        - name: end
+          in: query
+          required: false
+          description: Forecast end time as Unix timestamp.
+          schema: { type: integer }
+        - name: lat
+          in: query
+          required: true
+          description: Latitude of the forecast location.
+          schema:
+            type: number
+            minimum: -90
+            maximum: 90
+        - name: lon
+          in: query
+          required: true
+          description: Longitude of the forecast location.
+          schema:
+            type: number
+            minimum: -180
+            maximum: 180
+        - name: predict_hours
+          in: query
+          required: false
+          description: Number of hours to forecast from start (alternative to end).
+          schema: { type: integer, minimum: 1 }
+        - name: start
+          in: query
+          required: false
+          description: Forecast start time as Unix timestamp.
+          schema: { type: integer }
+        - name: variable
+          in: query
+          required: false
+          description: Meteorological variable (e.g. 2m_temperature, wind_speed_10m).
+          schema: { type: string }
+      responses:
+        '200':
+          description: Successful inference response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  forecast:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        time: { type: string }
+                        value: { type: number }
+                        variable: { type: string }
+                  latitude: { type: number }
+                  longitude: { type: number }
+              example:
+                latitude: 40.71
+                longitude: -74.01
+                forecast:
+                  - time: "2026-07-03T12:00:00Z"
+                    variable: 2m_temperature
+                    value: 297.5
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  # ------------------------------------------------------------------
+  # SN19 — Nineteen AI — multimodal generation
+  # ------------------------------------------------------------------
+  /v1/19/avatar:
+    post:
+      operationId: bittensor_sn19_nineteen_avatar
+      summary: Nineteen AI (Bittensor SN19) — POST /avatar
+      description: Generate an avatar image.
+      tags: [bittensor-sn19-nineteen]
+      security:
+        - x402: []
+      x-telegraph:
+        payment: x402
+        slug: bittensor-sn19-nineteen
+        subnet_id: "19"
+        signal_mapping:
+          type: multimodal_response
+          label_field: choices
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [messages, model]
+              properties:
+                max_tokens: { type: integer, minimum: 1 }
+                messages:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/ChatMessage'
+                model: { type: string }
+                stream: { type: boolean }
+                temperature: { type: number, minimum: 0, maximum: 2 }
+            example:
+              model: nineteen-avatar
+              messages:
+                - role: user
+                  content: A cyberpunk astronaut portrait
+      responses:
+        '200':
+          description: Successful inference response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  choices:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        finish_reason: { type: string }
+                        message:
+                          type: object
+                          properties:
+                            content: { type: string }
+                            role: { type: string }
+                  id: { type: string }
+                  model: { type: string }
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  /v1/19/chat/completions:
+    post:
+      operationId: bittensor_sn19_nineteen_chat_completions
+      summary: Nineteen AI (Bittensor SN19) — POST /chat/completions
+      description: Chat completion using a Bittensor-hosted language model.
+      tags: [bittensor-sn19-nineteen]
+      security:
+        - x402: []
+      x-telegraph:
+        payment: x402
+        slug: bittensor-sn19-nineteen
+        subnet_id: "19"
+        signal_mapping:
+          type: multimodal_response
+          label_field: choices
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [messages, model]
+              properties:
+                max_tokens: { type: integer, minimum: 1 }
+                messages:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/ChatMessage'
+                model: { type: string }
+                stream: { type: boolean }
+                temperature: { type: number, minimum: 0, maximum: 2 }
+            example:
+              model: nineteen-v1
+              messages:
+                - role: user
+                  content: Write a haiku about Base L2.
+              max_tokens: 64
+      responses:
+        '200':
+          description: Successful inference response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  choices:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        finish_reason: { type: string }
+                        message:
+                          type: object
+                          properties:
+                            content: { type: string }
+                            role: { type: string }
+                  id: { type: string }
+                  model: { type: string }
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  /v1/19/completions:
+    post:
+      operationId: bittensor_sn19_nineteen_completions
+      summary: Nineteen AI (Bittensor SN19) — POST /completions
+      description: Text completion (non-chat format).
+      tags: [bittensor-sn19-nineteen]
+      security:
+        - x402: []
+      x-telegraph:
+        payment: x402
+        slug: bittensor-sn19-nineteen
+        subnet_id: "19"
+        signal_mapping:
+          type: multimodal_response
+          label_field: choices
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [messages, model]
+              properties:
+                max_tokens: { type: integer, minimum: 1 }
+                messages:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/ChatMessage'
+                model: { type: string }
+                stream: { type: boolean }
+                temperature: { type: number, minimum: 0, maximum: 2 }
+            example:
+              model: nineteen-v1
+              messages:
+                - role: user
+                  content: "The capital of France is"
+      responses:
+        '200':
+          description: Successful inference response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  choices:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        finish_reason: { type: string }
+                        message:
+                          type: object
+                          properties:
+                            content: { type: string }
+                            role: { type: string }
+                  id: { type: string }
+                  model: { type: string }
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  /v1/19/image-to-image:
+    post:
+      operationId: bittensor_sn19_nineteen_image-to-image
+      summary: Nineteen AI (Bittensor SN19) — POST /image-to-image
+      description: Transform an existing image based on a prompt.
+      tags: [bittensor-sn19-nineteen]
+      security:
+        - x402: []
+      x-telegraph:
+        payment: x402
+        slug: bittensor-sn19-nineteen
+        subnet_id: "19"
+        signal_mapping:
+          type: multimodal_response
+          label_field: choices
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [messages, model]
+              properties:
+                max_tokens: { type: integer, minimum: 1 }
+                messages:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/ChatMessage'
+                model: { type: string }
+                stream: { type: boolean }
+                temperature: { type: number, minimum: 0, maximum: 2 }
+            example:
+              model: nineteen-i2i
+              messages:
+                - role: user
+                  content: "https://example.com/photo.jpg — make it look like a painting"
+      responses:
+        '200':
+          description: Successful inference response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  choices:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        finish_reason: { type: string }
+                        message:
+                          type: object
+                          properties:
+                            content: { type: string }
+                            role: { type: string }
+                  id: { type: string }
+                  model: { type: string }
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  /v1/19/text-to-image:
+    post:
+      operationId: bittensor_sn19_nineteen_text-to-image
+      summary: Nineteen AI (Bittensor SN19) — POST /text-to-image
+      description: Generate an image from a text prompt.
+      tags: [bittensor-sn19-nineteen]
+      security:
+        - x402: []
+      x-telegraph:
+        payment: x402
+        slug: bittensor-sn19-nineteen
+        subnet_id: "19"
+        signal_mapping:
+          type: multimodal_response
+          label_field: choices
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [messages, model]
+              properties:
+                max_tokens: { type: integer, minimum: 1 }
+                messages:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/ChatMessage'
+                model: { type: string }
+                stream: { type: boolean }
+                temperature: { type: number, minimum: 0, maximum: 2 }
+            example:
+              model: nineteen-t2i
+              messages:
+                - role: user
+                  content: A futuristic city at sunset, digital art
+      responses:
+        '200':
+          description: Successful inference response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  choices:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        finish_reason: { type: string }
+                        message:
+                          type: object
+                          properties:
+                            content: { type: string }
+                            role: { type: string }
+                  id: { type: string }
+                  model: { type: string }
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  # ------------------------------------------------------------------
+  # SN20 — Bounty / GoGoAgent — task-completion chat
+  # ------------------------------------------------------------------
+  /v1/20/chat:
+    post:
+      operationId: bittensor_sn20_bounty_chat
+      summary: Bounty / GoGoAgent (Bittensor SN20) — POST /chat
+      description: Chat completion endpoint.
+      tags: [bittensor-sn20-bounty]
+      security:
+        - x402: []
+      x-telegraph:
+        payment: x402
+        slug: bittensor-sn20-bounty
+        subnet_id: "20"
+        signal_mapping:
+          type: task_completion
+          label_field: choices
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [messages]
+              properties:
+                max_tokens: { type: integer }
+                messages:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/ChatMessage'
+                model: { type: string }
+                temperature: { type: number }
+            example:
+              model: gogoagent-v1
+              messages:
+                - role: user
+                  content: Find me a flight to Tokyo next Friday.
+      responses:
+        '200':
+          description: Successful inference response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  choices:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        message:
+                          type: object
+                          properties:
+                            content: { type: string }
+                            role: { type: string }
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  # ------------------------------------------------------------------
+  # SN22 — DeSearch — AI web + Twitter search
+  # ------------------------------------------------------------------
+  /v1/22/search:
+    post:
+      operationId: bittensor_sn22_desearch_search
+      summary: DeSearch (Bittensor SN22) — POST /search
+      description: AI-powered web + Twitter search with natural language query.
+      tags: [bittensor-sn22-desearch]
+      security:
+        - x402: []
+      x-telegraph:
+        payment: x402
+        slug: bittensor-sn22-desearch
+        subnet_id: "22"
+        signal_mapping:
+          type: search_relevance
+          label_field: results
+          reason_field: synthesis
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                model: { type: string }
+                query:
+                  type: string
+                  description: Natural language search query.
+                tools:
+                  type: array
+                  description: Optional list of tools to use (e.g. ['web', 'twitter']).
+                  items: { type: string }
+            example:
+              query: What's the latest on the Ethereum Pectra upgrade?
+              tools: [web, twitter]
+      responses:
+        '200':
+          description: Successful inference response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        snippet: { type: string }
+                        title: { type: string }
+                        url: { type: string }
+                  synthesis: { type: string }
+              example:
+                synthesis: The Pectra upgrade activated on mainnet on...
+                results:
+                  - title: Ethereum Pectra live
+                    url: https://blog.ethereum.org/pectra
+                    snippet: Pectra includes EIP-7251, EIP-7702...
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  /v1/22/search/links/web:
+    post:
+      operationId: bittensor_sn22_desearch_search_links_web
+      summary: DeSearch (Bittensor SN22) — POST /search/links/web
+      description: Returns raw web search result links for a query.
+      tags: [bittensor-sn22-desearch]
+      security:
+        - x402: []
+      x-telegraph:
+        payment: x402
+        slug: bittensor-sn22-desearch
+        subnet_id: "22"
+        signal_mapping:
+          type: search_relevance
+          label_field: results
+          reason_field: synthesis
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                model: { type: string }
+                query:
+                  type: string
+                  description: Natural language search query.
+                tools:
+                  type: array
+                  description: Optional list of tools to use (e.g. ['web', 'twitter']).
+                  items: { type: string }
+            example:
+              query: Telegraph Protocol Base L2
+              tools: [web]
+      responses:
+        '200':
+          description: Successful inference response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        snippet: { type: string }
+                        title: { type: string }
+                        url: { type: string }
+                  synthesis: { type: string }
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  /v1/22/deep:
+    post:
+      operationId: bittensor_sn22_desearch_deep
+      summary: DeSearch (Bittensor SN22) — POST /deep
+      description: Deep research synthesis — combines multiple sources into a structured report.
+      tags: [bittensor-sn22-desearch]
+      security:
+        - x402: []
+      x-telegraph:
+        payment: x402
+        slug: bittensor-sn22-desearch
+        subnet_id: "22"
+        signal_mapping:
+          type: search_relevance
+          label_field: results
+          reason_field: synthesis
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                model: { type: string }
+                query:
+                  type: string
+                  description: Natural language search query.
+                tools:
+                  type: array
+                  description: Optional list of tools to use (e.g. ['web', 'twitter']).
+                  items: { type: string }
+            example:
+              query: Compare the security models of Base and Arbitrum.
+      responses:
+        '200':
+          description: Successful inference response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        snippet: { type: string }
+                        title: { type: string }
+                        url: { type: string }
+                  synthesis: { type: string }
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  /v1/22/web:
+    get:
+      operationId: bittensor_sn22_desearch_web
+      summary: DeSearch (Bittensor SN22) — GET /web
+      description: Direct web search query (GET-based).
+      tags: [bittensor-sn22-desearch]
+      security:
+        - x402: []
+      x-telegraph:
+        payment: x402
+        slug: bittensor-sn22-desearch
+        subnet_id: "22"
+        signal_mapping:
+          type: search_relevance
+          label_field: results
+          reason_field: synthesis
+      parameters:
+        - name: model
+          in: query
+          required: false
+          schema: { type: string }
+        - name: query
+          in: query
+          required: true
+          description: Natural language search query.
+          schema:
+            type: string
+            description: Natural language search query.
+        - name: tools
+          in: query
+          required: false
+          description: Optional list of tools to use (e.g. ['web', 'twitter']).
+          schema:
+            type: array
+            description: Optional list of tools to use (e.g. ['web', 'twitter']).
+            items: { type: string }
+      responses:
+        '200':
+          description: Successful inference response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        snippet: { type: string }
+                        title: { type: string }
+                        url: { type: string }
+                  synthesis: { type: string }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  # ------------------------------------------------------------------
+  # SN32 — ItsAI — text authenticity detection
+  # ------------------------------------------------------------------
+  /v1/32/detect:
+    post:
+      operationId: bittensor_sn32_itsai_detect
+      summary: ItsAI Text Detector (Bittensor SN32) — POST /detect
+      description: Detect whether a piece of text is AI-generated.
+      tags: [bittensor-sn32-itsai]
+      security:
+        - x402: []
+      x-telegraph:
+        payment: x402
+        slug: bittensor-sn32-itsai
+        subnet_id: "32"
+        signal_mapping:
+          type: text_authenticity
+          label_field: label
+          confidence_field: score
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+                  minLength: 1
+                  description: The text to analyze for AI authorship.
+            example:
+              text: The quick brown fox jumps over the lazy dog.
+      responses:
+        '200':
+          description: Successful inference response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  label:
+                    type: string
+                    enum: [ai, human, mixed]
+                  score:
+                    type: number
+                    minimum: 0
+                    maximum: 1
+                    description: |
+                      Probability (0–1) that the text is AI-generated. Values
+                      near 1.0 indicate likely AI authorship.
+              example:
+                label: ai
+                score: 0.92
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  # ------------------------------------------------------------------
+  # SN34 — BitMind — deepfake media detection
+  # ------------------------------------------------------------------
+  /v1/34/detect-image:
+    post:
+      operationId: bittensor_sn34_bitmind_detect-image
+      summary: BitMind Deepfake Detector (Bittensor SN34) — POST /detect-image
+      description: Detect whether an image is a deepfake. Accepts base64 image or URL.
+      tags: [bittensor-sn34-bitmind]
+      security:
+        - x402: []
+      x-telegraph:
+        payment: x402
+        slug: bittensor-sn34-bitmind
+        subnet_id: "34"
+        signal_mapping:
+          type: media_authenticity
+          label_field: isAI
+          confidence_field: confidence
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  description: Binary video file (multipart, for video endpoints).
+                image:
+                  type: string
+                  description: Base64-encoded image or public image URL (for /detect-image).
+                url:
+                  type: string
+                  description: Public video URL (for video endpoints).
+            example:
+              image: https://example.com/suspicious-photo.jpg
+      responses:
+        '200':
+          description: Successful inference response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  confidence:
+                    type: number
+                    minimum: 0
+                    maximum: 1
+                    description: Detection confidence score.
+                  is_deepfake:
+                    type: boolean
+                    description: Whether the media was detected as a deepfake.
+                  label: { type: string }
+              example:
+                is_deepfake: true
+                confidence: 0.87
+                label: deepfake
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  /v1/34/detect-video:
+    post:
+      operationId: bittensor_sn34_bitmind_detect-video
+      summary: BitMind Deepfake Detector (Bittensor SN34) — POST /detect-video
+      description: |
+        Detect whether a video is a deepfake. Accepts multipart/form-data with
+        a 'file' field (video binary) or 'url'/'video' field (URL string).
+        Optional: startTime, endTime, fps, rich, source, generateThumbnails.
+      tags: [bittensor-sn34-bitmind]
+      security:
+        - x402: []
+      x-telegraph:
+        payment: x402
+        slug: bittensor-sn34-bitmind
+        subnet_id: "34"
+        signal_mapping:
+          type: media_authenticity
+          label_field: isAI
+          confidence_field: confidence
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  description: Binary video file (multipart, for video endpoints).
+                  format: binary
+                image:
+                  type: string
+                  description: Base64-encoded image or public image URL (for /detect-image).
+                url:
+                  type: string
+                  description: Public video URL (for video endpoints).
+      responses:
+        '200':
+          description: Successful inference response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  confidence:
+                    type: number
+                    minimum: 0
+                    maximum: 1
+                    description: Detection confidence score.
+                  is_deepfake:
+                    type: boolean
+                    description: Whether the media was detected as a deepfake.
+                  label: { type: string }
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  /v1/34/preprocess-video:
+    post:
+      operationId: bittensor_sn34_bitmind_preprocess-video
+      summary: BitMind Deepfake Detector (Bittensor SN34) — POST /preprocess-video
+      description: Pre-process a video for deepfake analysis. Accepts multipart/form-data.
+      tags: [bittensor-sn34-bitmind]
+      security:
+        - x402: []
+      x-telegraph:
+        payment: x402
+        slug: bittensor-sn34-bitmind
+        subnet_id: "34"
+        signal_mapping:
+          type: media_authenticity
+          label_field: isAI
+          confidence_field: confidence
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  description: Binary video file (multipart, for video endpoints).
+                  format: binary
+                image:
+                  type: string
+                  description: Base64-encoded image or public image URL (for /detect-image).
+                url:
+                  type: string
+                  description: Public video URL (for video endpoints).
+      responses:
+        '200':
+          description: Successful inference response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  confidence:
+                    type: number
+                    minimum: 0
+                    maximum: 1
+                    description: Detection confidence score.
+                  is_deepfake:
+                    type: boolean
+                    description: Whether the media was detected as a deepfake.
+                  label: { type: string }
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  /v1/34/get-video-upload-url:
+    post:
+      operationId: bittensor_sn34_bitmind_get-video-upload-url
+      summary: BitMind Deepfake Detector (Bittensor SN34) — POST /get-video-upload-url
+      description: Get a pre-signed URL for uploading a video to BitMind for analysis.
+      tags: [bittensor-sn34-bitmind]
+      security:
+        - x402: []
+      x-telegraph:
+        payment: x402
+        slug: bittensor-sn34-bitmind
+        subnet_id: "34"
+        signal_mapping:
+          type: media_authenticity
+          label_field: isAI
+          confidence_field: confidence
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  description: Binary video file (multipart, for video endpoints).
+                image:
+                  type: string
+                  description: Base64-encoded image or public image URL (for /detect-image).
+                url:
+                  type: string
+                  description: Public video URL (for video endpoints).
+            example:
+              url: https://example.com/clip.mp4
+      responses:
+        '200':
+          description: Successful inference response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  confidence:
+                    type: number
+                    minimum: 0
+                    maximum: 1
+                    description: Detection confidence score.
+                  is_deepfake:
+                    type: boolean
+                    description: Whether the media was detected as a deepfake.
+                  label: { type: string }
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  # ------------------------------------------------------------------
+  # SN64 — Chutes — high-performance LLM chat
+  # ------------------------------------------------------------------
+  /v1/64/chat/completions:
+    post:
+      operationId: bittensor_sn64_chutes_chat_completions
+      summary: Chutes High-Performance LLM (Bittensor SN64) — POST /chat/completions
+      description: Chat completion using high-performance Chutes-hosted models.
+      tags: [bittensor-sn64-chutes]
+      security:
+        - x402: []
+      x-telegraph:
+        payment: x402
+        slug: bittensor-sn64-chutes
+        subnet_id: "64"
+        signal_mapping:
+          type: language_response
+          label_field: choices
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [messages, model]
+              properties:
+                max_tokens: { type: integer, minimum: 1 }
+                messages:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/ChatMessage'
+                model:
+                  type: string
+                  description: Model identifier (e.g. 'deepseek-ai/DeepSeek-V3-0324').
+                stream: { type: boolean }
+                temperature: { type: number, minimum: 0, maximum: 2 }
+            example:
+              model: deepseek-ai/DeepSeek-V3-0324
+              messages:
+                - role: user
+                  content: Explain zero-knowledge proofs simply.
+              max_tokens: 256
+      responses:
+        '200':
+          description: Successful inference response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  choices:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        finish_reason: { type: string }
+                        message:
+                          type: object
+                          properties:
+                            content: { type: string }
+                            role: { type: string }
+                  id: { type: string }
+                  model: { type: string }
+                  usage:
+                    type: object
+                    properties:
+                      completion_tokens: { type: integer }
+                      prompt_tokens: { type: integer }
+                      total_tokens: { type: integer }
+              example:
+                id: chatcmpl-xyz
+                model: deepseek-ai/DeepSeek-V3-0324
+                choices:
+                  - finish_reason: stop
+                    message:
+                      role: assistant
+                      content: A zero-knowledge proof lets you...
+                usage:
+                  prompt_tokens: 12
+                  completion_tokens: 88
+                  total_tokens: 100
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  /v1/64/completions:
+    post:
+      operationId: bittensor_sn64_chutes_completions
+      summary: Chutes High-Performance LLM (Bittensor SN64) — POST /completions
+      description: Text completion (non-chat format).
+      tags: [bittensor-sn64-chutes]
+      security:
+        - x402: []
+      x-telegraph:
+        payment: x402
+        slug: bittensor-sn64-chutes
+        subnet_id: "64"
+        signal_mapping:
+          type: language_response
+          label_field: choices
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [messages, model]
+              properties:
+                max_tokens: { type: integer, minimum: 1 }
+                messages:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/ChatMessage'
+                model:
+                  type: string
+                  description: Model identifier (e.g. 'deepseek-ai/DeepSeek-V3-0324').
+                stream: { type: boolean }
+                temperature: { type: number, minimum: 0, maximum: 2 }
+            example:
+              model: deepseek-ai/DeepSeek-V3-0324
+              messages:
+                - role: user
+                  content: "The largest planet in our solar system is"
+      responses:
+        '200':
+          description: Successful inference response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  choices:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        finish_reason: { type: string }
+                        message:
+                          type: object
+                          properties:
+                            content: { type: string }
+                            role: { type: string }
+                  id: { type: string }
+                  model: { type: string }
+                  usage:
+                    type: object
+                    properties:
+                      completion_tokens: { type: integer }
+                      prompt_tokens: { type: integer }
+                      total_tokens: { type: integer }
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  # ------------------------------------------------------------------
+  # Validation (uses X-Internal-Secret, not x402)
+  # ------------------------------------------------------------------
+  /validate:
+    post:
+      operationId: validateMinerYaml
+      summary: Sandbox-test a miner integration YAML + API key
+      description: |
+        Validates a miner's integration YAML against the schema AND
+        sandbox-tests the provided API key against every endpoint defined in
+        the YAML (makes real HTTP calls to the upstream). On full success,
+        persists the API key to the `miner_api_keys` table so the miner can
+        go live immediately after on-chain registration.
+
+        Auth: `X-Internal-Secret` header (shared `INTERNAL_SECRET` env var).
+        If `INTERNAL_SECRET` is unset, auth is disabled (dev-only).
+      tags: [Validation]
+      security:
+        - internalSecret: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ValidateRequest'
+            example:
+              yaml: "slug: bittensor-sn18-zeus\nname: Zeus Weather Forecasting\n..."
+              api_key: sk-zeus-abc123
+      responses:
+        '200':
+          description: Validation result (check `valid` and `api_key_stored` fields).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidateResponse'
+              example:
+                valid: true
+                slug: bittensor-sn18-zeus
+                name: Zeus Weather Forecasting
+                api_key_stored: true
+                results:
+                  - path: /predict
+                    method: GET
+                    status: 200
+                    success: true
+                    latency_ms: 412
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /validate/collector:
+    post:
+      operationId: validateCollectorYaml
+      summary: Schema-validate a collector YAML (no HTTP testing)
+      description: |
+        Schema-only validation of a collector YAML — does NOT make HTTP calls
+        to any upstream. Returns the derived slug, name, and any schema errors.
+
+        Auth: `X-Internal-Secret` header.
+      tags: [Validation]
+      security:
+        - internalSecret: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ValidateCollectorRequest'
+            example:
+              yaml: "slug: news-collector\nname: News Collector\n..."
+      responses:
+        '200':
+          description: Validation result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidateCollectorResponse'
+              example:
+                valid: true
+                slug: news-collector
+                name: News Collector
+                errors: []
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
