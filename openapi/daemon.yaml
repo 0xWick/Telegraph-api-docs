@@ -1,0 +1,347 @@
+openapi: 3.0.3
+info:
+  title: Telegraph Daemon Dashboard API
+  version: 1.0.0
+  description: |
+    The **Daemon** is the read-only dashboard API that surfaces the
+    continuously-collected questions/results (news, weather, FDA alerts,
+    etc.) gathered by the engine's collector loop. It powers the public
+    dashboard and lets Agents browse what the network has been asking.
+
+    ## Authentication
+
+    **None.** All daemon endpoints are free and read-only. CORS allows GET
+    only (no writes).
+
+    ## Pagination
+
+    List endpoints return a `Page` envelope: `{ results, total, limit, offset }`.
+  contact:
+    name: Telegraph Protocol
+    url: https://github.com/AnomalyFi/Telegraph
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+servers:
+  - url: https://your-stable-domain.com/daemon
+    description: Telegraph node (production — replace with your node's domain)
+  - url: http://localhost:7044/daemon
+    description: Local development node
+tags:
+  - name: Health
+    description: Daemon health check.
+  - name: Questions
+    description: Browse collected questions/results with filtering and sorting.
+  - name: Categories
+    description: Category statistics and the list of valid categories.
+components:
+  responses:
+    BadRequest:
+      description: Invalid query parameter.
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas/Error.yaml
+          example:
+            error: "invalid limit: must be 1-100"
+            code: invalid_request
+    MethodNotAllowed:
+      description: Method not allowed — daemon endpoints are GET-only.
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas/Error.yaml
+          example:
+            error: "method not allowed"
+            code: method_not_allowed
+    InternalServerError:
+      description: Database query failed.
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas/Error.yaml
+  schemas:
+    Page:
+      type: object
+      description: Paginated response envelope.
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/MinerResult'
+          description: The page of results.
+        total:
+          type: integer
+          format: int64
+          description: Total matching items across all pages.
+        limit:
+          type: integer
+          format: int64
+          description: The page size used.
+        offset:
+          type: integer
+          format: int64
+          description: The offset used.
+    MinerResult:
+      type: object
+      description: A collected question + its inference result + metadata.
+      properties:
+        id:
+          type: string
+          description: Unique result ID.
+        category:
+          type: string
+          description: Category (e.g. `news`, `weather`, `fda`).
+        source:
+          type: string
+          description: The collector source.
+        question:
+          type: string
+          description: The natural-language question that was asked.
+        answer:
+          type: string
+          description: The inference result / synthesized answer.
+        interest:
+          type: number
+          description: Interest score (0-10).
+        affected:
+          type: number
+          description: Affected score (0-100).
+        audience:
+          type: number
+          description: Audience score (0-100).
+        miner_slug:
+          type: string
+          description: The miner that produced the result.
+        timestamp:
+          type: string
+          format: date-time
+          description: When the result was collected.
+        created_at:
+          type: string
+          format: date-time
+      example:
+        id: "res_01HMZK8X2J9QABCDEF"
+        category: news
+        source: bbc
+        question: "What's the latest on the Ethereum Pectra upgrade?"
+        answer: "Pectra activated on mainnet including EIP-7251..."
+        interest: 7.5
+        affected: 45
+        audience: 60
+        miner_slug: bittensor-sn22-desearch
+        timestamp: "2026-07-03T12:00:00Z"
+    CategoryStat:
+      type: object
+      properties:
+        category:
+          type: string
+        count:
+          type: integer
+        avg_interest:
+          type: number
+        max_interest:
+          type: number
+      description: Per-category aggregate statistics.
+    CategoriesResponse:
+      type: object
+      properties:
+        stats:
+          type: array
+          items:
+            $ref: '#/components/schemas/CategoryStat'
+        categories:
+          type: array
+          items: { type: string }
+          description: The full list of valid category names.
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+        time:
+          type: string
+          format: date-time
+          description: Current server time (RFC3339).
+paths:
+  /health:
+    get:
+      operationId: getDaemonHealth
+      summary: Daemon health check
+      description: Returns the daemon health status and current server time.
+      tags: [Health]
+      responses:
+        '200':
+          description: Daemon is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: ok
+                time: "2026-07-03T12:00:00Z"
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/questions:
+    get:
+      operationId: listQuestions
+      summary: List collected questions/results (paginated, filterable)
+      description: |
+        Paginated query of daemon-collected questions/results with full
+        filtering by category, source, time window, and minimum scores; and
+        sorting by recency, interest, affected, or audience.
+      tags: [Questions]
+      parameters:
+        - name: category
+          in: query
+          required: false
+          description: Filter to a single category.
+          schema: { type: string, example: news }
+        - name: categories
+          in: query
+          required: false
+          description: Comma-separated list of categories to include.
+          schema: { type: string, example: "news,weather" }
+        - name: source
+          in: query
+          required: false
+          description: Filter to a single collector source.
+          schema: { type: string }
+        - name: sort
+          in: query
+          required: false
+          description: Sort field.
+          schema:
+            type: string
+            enum: [recent, interest, affected, audience]
+            default: recent
+        - name: order
+          in: query
+          required: false
+          description: Sort direction.
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+        - name: since
+          in: query
+          required: false
+          description: Include results since this time (RFC3339).
+          schema: { type: string, format: date-time }
+        - name: until
+          in: query
+          required: false
+          description: Include results until this time (RFC3339).
+          schema: { type: string, format: date-time }
+        - name: since_hours
+          in: query
+          required: false
+          description: Include results from the last N hours (float). Alternative to since/until.
+          schema: { type: number, example: 24 }
+        - name: min_interest
+          in: query
+          required: false
+          description: Minimum interest score (0-10).
+          schema: { type: number, minimum: 0, maximum: 10 }
+        - name: min_affected
+          in: query
+          required: false
+          description: Minimum affected score (0-100).
+          schema: { type: number, minimum: 0, maximum: 100 }
+        - name: min_audience
+          in: query
+          required: false
+          description: Minimum audience score (0-100).
+          schema: { type: number, minimum: 0, maximum: 100 }
+        - name: limit
+          in: query
+          required: false
+          description: Page size (1-100, default 20).
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - name: offset
+          in: query
+          required: false
+          description: Pagination offset (>=0).
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: Paginated list of questions/results.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Page'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/questions/top:
+    get:
+      operationId: listTopQuestions
+      summary: Top questions by interest score
+      description: |
+        Returns the top questions by interest score, optionally filtered by
+        category(ies) and a time window.
+      tags: [Questions]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Number of top questions to return (1-50, default 10).
+          schema: { type: integer, minimum: 1, maximum: 50, default: 10 }
+        - name: category
+          in: query
+          required: false
+          description: Comma-separated list of categories to include.
+          schema: { type: string }
+        - name: since_hours
+          in: query
+          required: false
+          description: Restrict to the last N hours.
+          schema: { type: number, example: 24 }
+      responses:
+        '200':
+          description: Top questions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Page'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/categories:
+    get:
+      operationId: listCategories
+      summary: Category statistics
+      description: Returns per-category aggregate statistics plus the full list of valid category names.
+      tags: [Categories]
+      responses:
+        '200':
+          description: Category stats and list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CategoriesResponse'
+              example:
+                categories: [news, weather, fda, crypto]
+                stats:
+                  - category: news
+                    count: 1240
+                    avg_interest: 6.2
+                    max_interest: 9.8
+                  - category: weather
+                    count: 530
+                    avg_interest: 4.1
+                    max_interest: 8.5
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
