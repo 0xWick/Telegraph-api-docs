@@ -1,0 +1,900 @@
+openapi: 3.0.3
+info:
+  title: Telegraph Engine API
+  version: 1.0.0
+  description: |
+    The **Engine** is the LLM-routed inference layer that sits in front of the
+    miner-dispatcher. It classifies an Agent's natural-language query, picks
+    the best-ranked miner(s) for the detected intent, dispatches the request,
+    and returns a unified result. It also exposes ERC-8183 on-chain job
+    lookup, the intent/miner registry, and a WebSocket ask pipeline.
+
+    ## Authentication
+
+    - **`POST /v1/ask`** and **`POST /v1/ask/{subnet_id}`** use **x402 payment**
+      ($0.01 USDC, `PAYMENT-SIGNATURE` header). Loopback (localhost) requests
+      bypass payment for internal daemon-to-engine calls.
+    - The **WebSocket** `/ws` uses **EIP-191 wallet auth** (personal_sign of
+      a server-issued nonce) when `?wallet_address=0x...` is supplied.
+      Anonymous connections can `ask`/`ask_direct`/`list_subnets` but cannot
+      `subscribe`. After wallet verification, an on-chain escrow balance
+      check ($1 floor) applies if `BASE_RPC_URL` + `DIAMOND_ADDRESS` are set.
+    - All other endpoints (`/v1/miners`, `/v1/job/*`, `/v1/intents/*`) are
+      **free** (no auth) — they're read-only discovery.
+
+    ## WebSocket
+
+    OpenAPI 3.0 does not natively model WebSockets. The `/ws` endpoint below
+    is documented as a `GET` with the `upgrade: websocket` header, and the
+    full frame schema (actions, server messages, the auth handshake) is
+    described in `docs/engine-daemon/engine-websocket.md` and modelled via
+    the `WSMessage` / `WSAskRequest` schemas in components.
+  contact:
+    name: Telegraph Protocol
+    url: https://github.com/AnomalyFi/Telegraph
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+servers:
+  - url: https://your-stable-domain.com/engine
+    description: Telegraph node (production — replace with your node's domain)
+  - url: http://localhost:7044/engine
+    description: Local development node
+tags:
+  - name: Miners
+    description: List registered miners/subnets (free, read-only).
+  - name: Inference
+    description: The x402-gated /v1/ask inference endpoints (LLM-routed + direct).
+  - name: Jobs
+    description: ERC-8183 on-chain job lookup (free, read-only).
+  - name: Intents
+    description: Intent registry — list intents, their miners, and WASM authors (free).
+  - name: WebSocket
+    description: The /ws ask pipeline + subscription stream (EIP-191 wallet auth).
+components:
+  securitySchemes:
+    x402:
+      $ref: ../components/security/x402.yaml
+    eip191:
+      $ref: ../components/security/eip191.yaml
+  responses:
+    PaymentRequired:
+      description: Payment required — submit x402 USDC payment and retry.
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas/X402ChallengeBody.yaml
+    BadRequest:
+      description: The request was malformed (invalid JSON, missing required field).
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas/Error.yaml
+          example:
+            error: "invalid request body"
+            code: invalid_request
+    NotFound:
+      description: The requested resource (miner, job, intent) was not found.
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas/Error.yaml
+          example:
+            error: "miner not found: weather"
+            code: not_found
+    BadGateway:
+      description: On-chain contract call failed or returned invalid data.
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas/Error.yaml
+    InternalServerError:
+      description: Unexpected internal server error (routing failed, all miners failed, etc.).
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas/Error.yaml
+          example:
+            error: "all miners failed"
+            code: internal_error
+  parameters:
+    JobIdPath:
+      name: id
+      in: path
+      required: true
+      description: ERC-8183 job ID (on-chain uint64).
+      schema:
+        type: integer
+        format: uint64
+        minimum: 0
+        example: 42
+    IntentIdPath:
+      name: id
+      in: path
+      required: true
+      description: |
+        Intent identifier. Accepts either a 32-byte hex hash (with or without
+        `0x` prefix) OR an uppercase intent name (e.g. `WEATHER_FORECAST`,
+        `CHAT_COMPLETION`).
+      schema:
+        type: string
+        example: WEATHER_FORECAST
+    SubnetIdPath:
+      name: subnet_id
+      in: path
+      required: true
+      description: The miner/subnet ID to route to directly (skips LLM routing).
+      schema:
+        type: string
+        example: bittensor-sn18-zeus
+  schemas:
+    MinerCatalogItem:
+      type: object
+      description: A registered miner/subnet in the engine catalog.
+      properties:
+        id:
+          type: string
+          description: Internal miner ID.
+        name:
+          type: string
+          description: Human-readable name.
+        slug:
+          type: string
+          description: URL-safe slug (e.g. `bittensor-sn18-zeus`).
+        description:
+          type: string
+        base_url:
+          type: string
+          description: Upstream base URL.
+        capabilities:
+          type: array
+          items: { type: string }
+          description: Capability tags (e.g. `language`, `weather`).
+        cost_per_call:
+          type: string
+          description: Human-readable cost (e.g. `$0.01 USDC`).
+        protocol:
+          type: string
+          description: Wire protocol (e.g. `rest`).
+    MinerCatalogResponse:
+      type: object
+      properties:
+        miners:
+          type: array
+          items:
+            $ref: '#/components/schemas/MinerCatalogItem'
+        count:
+          type: integer
+    AskRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+          description: The natural-language inference query.
+        context:
+          type: object
+          additionalProperties: true
+          description: |
+            Optional context map. Must be JSON-serializable. Merged into the
+            LLM-built request body; caller values win on key conflicts.
+      description: Request body for POST /v1/ask.
+      example:
+        query: What's the weather in New York?
+        context:
+          units: imperial
+    AskResponse:
+      type: object
+      properties:
+        miner_used:
+          type: string
+          description: The slug of the miner that produced the result.
+        miner_name:
+          type: string
+          description: Human-readable miner name.
+        endpoint:
+          type: string
+          description: The upstream endpoint that was called (optional).
+        result:
+          description: The inference result (free-form — depends on the miner).
+          additionalProperties: true
+        cost_usd:
+          type: number
+          format: float
+          description: The USDC cost of the call.
+        duration_ms:
+          type: integer
+          format: int64
+          description: Round-trip duration in milliseconds.
+        timestamp:
+          type: string
+          format: date-time
+          description: ISO-8601 timestamp of the response.
+        reasoning:
+          type: string
+          description: Optional LLM routing reasoning.
+        intent:
+          type: string
+          description: Optional detected intent ID.
+      description: Successful /v1/ask response.
+      example:
+        miner_used: bittensor-sn18-zeus
+        miner_name: Zeus Weather Forecasting
+        result:
+          latitude: 40.71
+          longitude: -74.01
+          forecast:
+            - time: "2026-07-03T12:00:00Z"
+              variable: 2m_temperature
+              value: 297.5
+        cost_usd: 0.01
+        duration_ms: 412
+        timestamp: "2026-07-03T12:00:05Z"
+        intent: WEATHER_FORECAST
+    AskSubnetRequest:
+      type: object
+      required: [method, endpoint, payload]
+      properties:
+        method:
+          type: string
+          enum: [GET, POST, PUT, PATCH, DELETE]
+          description: HTTP method to use against the target subnet.
+        endpoint:
+          type: string
+          description: The sub-endpoint path on the target subnet (e.g. `/predict`).
+        payload:
+          type: object
+          additionalProperties: true
+          description: The request body / query params to forward.
+      description: Request body for POST /v1/ask/{subnet_id}.
+      example:
+        method: GET
+        endpoint: /predict
+        payload:
+          lat: 40.71
+          lon: -74.01
+    JobDetail:
+      type: object
+      properties:
+        job_id:
+          type: integer
+          format: uint64
+        agent:
+          type: string
+          description: Agent address that created the job.
+        intent_id:
+          type: string
+        callback:
+          type: string
+          description: Callback contract address.
+        budget:
+          type: string
+          description: Budget in wei (string for precision).
+        miner_payment:
+          type: string
+        protocol_fee:
+          type: string
+        state:
+          type: integer
+          format: uint8
+          description: Raw on-chain state code.
+        state_name:
+          type: string
+          enum: [Funded, Terminal, Cancelled, Unknown]
+          description: Human-readable state name.
+        output_hash:
+          type: string
+          description: The miner's committed output hash.
+        tx_hash:
+          type: string
+          description: Transaction hash of the resolution (optional).
+        signal_hash:
+          type: string
+          description: Signal hash (optional).
+        created_at:
+          type: string
+          format: date-time
+      description: ERC-8183 on-chain job details.
+    JobResult:
+      type: object
+      properties:
+        job_id:
+          type: integer
+          format: uint64
+        miner_slug:
+          type: string
+        miner_address:
+          type: string
+        agent:
+          type: string
+        intent_id:
+          type: string
+        output_hash:
+          type: string
+        raw_response:
+          description: The raw miner inference result stored locally.
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+        tx_hash:
+          type: string
+        signal_hash:
+          type: string
+        error_msg:
+          type: string
+      description: Local job result (for verifying against on-chain output_hash).
+    IntentSummary:
+      type: object
+      properties:
+        intent_id:
+          type: string
+        intent_name:
+          type: string
+        miner_count:
+          type: integer
+      description: Summary of a registered intent.
+    IntentDetail:
+      type: object
+      properties:
+        intent_id:
+          type: string
+        intent_name:
+          type: string
+        miners:
+          type: array
+          items:
+            $ref: '#/components/schemas/MinerCatalogItem'
+        miner_count:
+          type: integer
+        wasm:
+          type: array
+          description: WASM script authors for this intent (optional).
+          items:
+            type: object
+        wasm_count:
+          type: integer
+    WSMessage:
+      type: object
+      required: [type, timestamp]
+      properties:
+        type:
+          type: string
+          enum:
+            - connected
+            - received
+            - routing
+            - routed
+            - executing
+            - result
+            - error
+            - subscribed
+            - unsubscribed
+            - ping
+            - pong
+            - wallet_challenge
+            - wallet_verified
+          description: Server message frame type.
+        data:
+          description: Frame payload (shape depends on `type`).
+          additionalProperties: true
+        timestamp:
+          type: string
+          format: date-time
+      description: |
+        A server-to-client WebSocket frame. The `data` field shape varies by
+        `type`:
+        - `connected`: `{ message, wallet_address? }`
+        - `received`: `{ query }` — acknowledges an ask
+        - `routing`: `{ query }` — LLM routing started
+        - `routed`: `{ miner_id, miner_name }` — miner selected
+        - `executing`: `{ miner_id, endpoint }` — dispatch started
+        - `result`: an `AskResponse` object
+        - `error`: `{ message: string }`
+        - `subscribed`/`unsubscribed`: `{ subscription_id, intents }`
+        - `wallet_challenge`: `{ nonce, message, wallet_address, instruction }`
+        - `wallet_verified`: `{ wallet_address }`
+        - `ping`/`pong`: `{}` (heartbeat)
+    WSAskRequest:
+      type: object
+      required: [action]
+      properties:
+        action:
+          type: string
+          enum:
+            - auth_wallet
+            - wallet_verify
+            - ask
+            - ask_direct
+            - subscribe
+            - unsubscribe
+            - list_subscriptions
+            - list_subnets
+            - ping
+          description: The WebSocket action to perform.
+        query:
+          type: string
+          description: Required for `ask`. The natural-language inference query.
+        subnet_id:
+          type: string
+          description: Required for `ask_direct`. The target miner/subnet ID.
+        method:
+          type: string
+          enum: [GET, POST, PUT, PATCH, DELETE]
+          description: Required for `ask_direct`.
+        endpoint:
+          type: string
+          description: Required for `ask_direct`. The sub-endpoint path.
+        payload:
+          type: object
+          additionalProperties: true
+          description: Required for `ask_direct`. The body/params to forward.
+        context:
+          type: object
+          additionalProperties: true
+          description: Optional context for `ask`.
+        signature:
+          type: string
+          description: Required for `wallet_verify`. EIP-191 personal_sign of the challenge `message`.
+        intents:
+          type: array
+          items: { type: string }
+          description: For `subscribe`/`unsubscribe`. Intent IDs to stream.
+        category:
+          type: string
+          description: For `subscribe`. Category filter.
+        min_interest:
+          type: number
+          description: For `subscribe`. Minimum interest score (0-10).
+        max_per_hour:
+          type: integer
+          description: For `subscribe`. Rate limit on delivered signals.
+        subscription_id:
+          type: string
+          description: For `unsubscribe`. The subscription to cancel.
+      description: |
+        Client-to-server WebSocket request frame. OpenAPI 3.0 cannot model WS
+        request bodies on a GET upgrade — this schema documents the JSON
+        frame the client sends AFTER the upgrade. See
+        `docs/engine-daemon/engine-websocket.md` for the full reference.
+      example:
+        action: ask
+        query: What's the weather in Tokyo?
+paths:
+  # ------------------------------------------------------------------
+  # Miners (free, read-only)
+  # ------------------------------------------------------------------
+  /v1/miners:
+    get:
+      operationId: listMiners
+      summary: List all registered miners/subnets
+      description: |
+        Returns the public catalog of all currently-registered miners/subnets
+        (loaded integrations). Free (no payment). Use this to discover what's
+        available before calling `/v1/ask`.
+      tags: [Miners]
+      responses:
+        '200':
+          description: Miner catalog.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MinerCatalogResponse'
+              example:
+                count: 2
+                miners:
+                  - id: zeus
+                    slug: bittensor-sn18-zeus
+                    name: Zeus Weather Forecasting
+                    capabilities: [weather]
+                    cost_per_call: $0.01 USDC
+                    protocol: rest
+                  - id: bitmind
+                    slug: bittensor-sn34-bitmind
+                    name: BitMind Deepfake Detector
+                    capabilities: [media_authenticity]
+                    cost_per_call: $0.01 USDC
+                    protocol: rest
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /v1/subnets:
+    get:
+      operationId: listSubnets
+      summary: List all registered subnets (legacy alias for /v1/miners)
+      description: Legacy alias for `GET /v1/miners` — same handler, same response.
+      tags: [Miners]
+      responses:
+        '200':
+          description: Miner catalog (same as /v1/miners).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MinerCatalogResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ------------------------------------------------------------------
+  # Inference (x402-gated)
+  # ------------------------------------------------------------------
+  /v1/ask:
+    post:
+      operationId: postAsk
+      summary: LLM-routed inference
+      description: |
+        The primary inference endpoint. Classifies the natural-language
+        `query` via the LLM router, picks the top-2 ranked miners for the
+        detected intent, tries the primary then the fallback miner, and
+        returns the unified result. Persists to the DB for non-loopback
+        callers.
+
+        **Auth:** x402 payment ($0.01 USDC). Loopback (localhost) requests
+        bypass payment for internal daemon-to-engine calls.
+
+        **Flow:**
+        1. Send `query` (+ optional `context`) with no `PAYMENT-SIGNATURE`.
+        2. Receive `402` with payment instructions.
+        3. Pay USDC on-chain, retry with `PAYMENT-SIGNATURE`.
+        4. Receive the `AskResponse` with the routed result.
+      tags: [Inference]
+      security:
+        - x402: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AskRequest'
+            example:
+              query: What's the weather in New York?
+              context:
+                units: imperial
+      responses:
+        '200':
+          description: Routed inference result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AskResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /v1/ask/{subnet_id}:
+    post:
+      operationId: postAskWithId
+      summary: Direct subnet inference (skip LLM routing)
+      description: |
+        Direct, user-specified subnet inference — skips the LLM router. The
+        caller provides the subnet ID, HTTP method, endpoint, and payload.
+        Useful when the Agent already knows which miner it wants.
+
+        **Auth:** x402 payment (same gate as /v1/ask). Loopback bypassed.
+      tags: [Inference]
+      security:
+        - x402: []
+      parameters:
+        - $ref: '#/components/parameters/SubnetIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AskSubnetRequest'
+            example:
+              method: GET
+              endpoint: /predict
+              payload:
+                lat: 40.71
+                lon: -74.01
+      responses:
+        '200':
+          description: Direct inference result.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  miner_id: { type: string }
+                  miner_name: { type: string }
+                  result:
+                    type: object
+                    additionalProperties: true
+                  cost_usd: { type: number, format: float }
+                  duration_ms: { type: integer, format: int64 }
+                  timestamp: { type: string, format: date-time }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ------------------------------------------------------------------
+  # Jobs (ERC-8183 on-chain lookup, free)
+  # ------------------------------------------------------------------
+  /v1/job/{id}:
+    get:
+      operationId: getJob
+      summary: Get ERC-8183 job details
+      description: |
+        Returns on-chain ERC-8183 job details (agent, intent, callback,
+        budget, state, outputHash) by reading the diamond contract via
+        `eth_call`. Used by agents to retrieve `output_hash` for
+        verification.
+      tags: [Jobs]
+      parameters:
+        - $ref: '#/components/parameters/JobIdPath'
+      responses:
+        '200':
+          description: Job details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobDetail'
+              example:
+                job_id: 42
+                agent: "0xabc...1234"
+                intent_id: WEATHER_FORECAST
+                callback: "0xdef...5678"
+                budget: "10000000"
+                state: 1
+                state_name: Funded
+                output_hash: "0x..."
+                created_at: "2026-07-03T12:00:00Z"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  /v1/job/{id}/result:
+    get:
+      operationId: getJobResult
+      summary: Get local job result (for output_hash verification)
+      description: |
+        Returns the raw miner inference result stored locally for an ERC-8183
+        job. Agents use this to verify the local result matches the on-chain
+        `output_hash` committed by the miner.
+      tags: [Jobs]
+      parameters:
+        - $ref: '#/components/parameters/JobIdPath'
+      responses:
+        '200':
+          description: Local job result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ------------------------------------------------------------------
+  # Intents (free, read-only)
+  # ------------------------------------------------------------------
+  /v1/intents:
+    get:
+      operationId: listIntents
+      summary: List all registered intents
+      description: |
+        Lists all registered intents. Uses the on-chain intent store if
+        wired; else falls back to enumerating intents from hot-registered
+        miners.
+      tags: [Intents]
+      responses:
+        '200':
+          description: Intent list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  intents:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/IntentSummary'
+                  count:
+                    type: integer
+              example:
+                count: 2
+                intents:
+                  - intent_id: "0xabc..."
+                    intent_name: WEATHER_FORECAST
+                    miner_count: 1
+                  - intent_id: "0xdef..."
+                    intent_name: CHAT_COMPLETION
+                    miner_count: 3
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /v1/intents/{id}:
+    get:
+      operationId: getIntentDetail
+      summary: Get intent detail
+      description: |
+        Detailed info for a specific intent. Surfaces matching hot-registered
+        miners and (optionally) on-chain WASM script authors.
+      tags: [Intents]
+      parameters:
+        - $ref: '#/components/parameters/IntentIdPath'
+      responses:
+        '200':
+          description: Intent detail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IntentDetail'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /v1/intents/{id}/miners:
+    get:
+      operationId: getIntentMiners
+      summary: List miners for an intent
+      description: |
+        All miners registered for a specific intent. Returns both
+        hot-registered miners and (if the intent store is wired and the ID is
+        a 32-byte hash) on-chain miners.
+      tags: [Intents]
+      parameters:
+        - $ref: '#/components/parameters/IntentIdPath'
+      responses:
+        '200':
+          description: Miners for the intent.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  intent_id: { type: string }
+                  miners:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/MinerCatalogItem'
+                  count: { type: integer }
+                  onchain_miners:
+                    type: array
+                    items:
+                      type: object
+                    description: On-chain miners (optional, only for 32-byte hash IDs).
+                  onchain_miner_count: { type: integer }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /v1/intents/{id}/wasm:
+    get:
+      operationId: getIntentWasm
+      summary: List WASM script authors for an intent
+      description: All WASM validation script authors registered for a specific intent.
+      tags: [Intents]
+      parameters:
+        - $ref: '#/components/parameters/IntentIdPath'
+      responses:
+        '200':
+          description: WASM authors for the intent.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  intent_id: { type: string }
+                  wasm:
+                    type: array
+                    items:
+                      type: object
+                  count: { type: integer }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ------------------------------------------------------------------
+  # WebSocket (EIP-191 wallet auth for subscribe; x402-free for ask)
+  # ------------------------------------------------------------------
+  /ws:
+    get:
+      operationId: engineWebSocket
+      summary: Engine WebSocket (ask pipeline + subscription stream)
+      description: |
+        The Engine WebSocket. Upgrades from HTTP GET with the standard
+        `Upgrade: websocket` / `Connection: Upgrade` headers.
+
+        **Query param:** `?wallet_address=0x...` (optional Ethereum address).
+        If supplied, the connection requires EIP-191 wallet verification
+        before allowing `subscribe` actions. Anonymous connections can use
+        `ask`, `ask_direct`, `list_subnets`, and `ping` only.
+
+        **Heartbeat:** server pings every 30s; 90s read deadline.
+
+        **Auth handshake (when wallet_address is supplied):**
+        1. Client sends `{"action":"auth_wallet"}`.
+        2. Server responds with a `wallet_challenge` frame
+           (`{ nonce, message, wallet_address, instruction }`).
+        3. Client signs `message` via `personal_sign` (EIP-191) and sends
+           `{"action":"wallet_verify","signature":"0x..."}`.
+        4. Server responds with `wallet_verified` or closes the connection.
+
+        **Escrow gate:** after wallet verification, if `BASE_RPC_URL` +
+        `DIAMOND_ADDRESS` are set, an on-chain escrow balance check applies
+        ($1 USDC floor). Connections below the floor are closed.
+
+        **Actions:** `auth_wallet`, `wallet_verify`, `ask`, `ask_direct`,
+        `subscribe`, `unsubscribe`, `list_subscriptions`, `list_subnets`,
+        `ping`.
+
+        **Server frames:** `connected`, `received`, `routing`, `routed`,
+        `executing`, `result`, `error`, `subscribed`, `unsubscribed`,
+        `ping`, `pong`, `wallet_challenge`, `wallet_verified`.
+
+        See `docs/engine-daemon/engine-websocket.md` for the full frame
+        reference and sequence diagrams.
+      tags: [WebSocket]
+      x-telegraph:
+        protocol: websocket
+        auth: eip191
+        heartbeat_seconds: 30
+        read_deadline_seconds: 90
+        escrow_floor_usdc: 1.0
+      parameters:
+        - name: wallet_address
+          in: query
+          required: false
+          description: Optional Ethereum address. If supplied, EIP-191 wallet verification is required before `subscribe` actions are allowed.
+          schema:
+            type: string
+            pattern: '^0x[a-fA-F0-9]{40}$'
+            example: "0x71C7656EC7ab88b098defB751B7401B5f6d8976F"
+      responses:
+        '200':
+          description: |
+            WebSocket upgrade rejected — server responded over plain HTTP
+            with an error frame (e.g. malformed `wallet_address`). The
+            successful upgrade path is `101 Switching Protocols` below.
+          content:
+            application/json:
+              schema:
+                $ref: ../components/schemas/Error.yaml
+              example:
+                error: "invalid wallet_address format"
+                code: invalid_request
+        '101':
+          description: Switching Protocols — WebSocket upgrade successful.
+          headers:
+            Upgrade:
+              schema: { type: string, example: websocket }
+            Connection:
+              schema: { type: string, example: Upgrade }
+            Sec-WebSocket-Accept:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WSMessage'
+              example:
+                type: connected
+                data:
+                  message: "connected to telegraph engine"
+                timestamp: "2026-07-03T12:00:00Z"
+            # Custom media type documenting the client-frame schema sent
+            # AFTER the upgrade (OpenAPI 3.0 can't model WS bodies natively).
+            application/ws-client-frame:
+              schema:
+                $ref: '#/components/schemas/WSAskRequest'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
