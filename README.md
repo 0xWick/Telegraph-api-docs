@@ -107,12 +107,12 @@ external `$ref`s) suitable for direct Swagger UI consumption.
 
 | Spec | Paths | Lint | Validate |
 |---|---|---|---|
-| `openapi/miner-dispatcher.yaml` | 28 | clean | valid |
+| `openapi/miner-dispatcher.yaml` | 19 | clean | valid |
 | `openapi/engine.yaml` | 11 | clean | valid |
 | `openapi/daemon.yaml` | 4 | clean | valid |
 | `openapi/internal-bridge.yaml` | 37 | clean | valid |
 | `openapi/bittensor-legacy.yaml` | 12 | clean | valid |
-| **Total** | **92 paths** | | |
+| **Total** | **83 paths** | | |
 
 Documentation: 33 markdown files across 7 sections (`overview`, `http-proxy`,
 `engine-daemon`, `internal-bridge`, `on-chain`, `integration-guides`,
