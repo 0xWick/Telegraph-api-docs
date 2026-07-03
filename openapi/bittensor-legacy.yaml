@@ -1,6 +1,6 @@
 openapi: 3.0.3
 info:
-  title: Telegraph Legacy Bittensor Proxy API (Deprecated)
+  title: Telegraph Legacy Proxy API (Deprecated)
   version: 0.9.0
   description: '**DEPRECATED.** This is the older non-x402 `/api/miners/*` and
 
@@ -29,13 +29,6 @@ info:
 
 
     None. The legacy proxy is unauthenticated.
-
-
-    ## Supported subnets
-
-
-    SN1, SN18, SN19, SN20, SN22, SN32, SN34, SN42, SN64, SN101, SN102.
-
     '
   contact:
     name: Telegraph Protocol
@@ -93,11 +86,8 @@ components:
       name: id
       in: path
       required: true
-      description: 'Bittensor subnet ID (integer). Supported: 1, 18, 19, 20, 22, 32, 34,
+      description: 'Miner ID (integer) — any registered miner.'
 
-        42, 64, 101, 102.
-
-        '
       schema:
         type: integer
         example: 18

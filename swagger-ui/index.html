@@ -3,17 +3,18 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="Telegraph Protocol API — interactive OpenAPI documentation. Five specs covering the miner-dispatcher HTTP proxy, Engine + Daemon HTTP/WS, internal TSS bridge node-ops, and the legacy bittensor proxy." />
+  <meta name="description" content="Telegraph Protocol API — interactive OpenAPI documentation. Five specs covering the miner-dispatcher HTTP proxy, Engine + Daemon HTTP/WS, internal TSS bridge node-ops, and the legacy proxy." />
   <title>Telegraph Protocol API · Swagger UI</title>
-  <link rel="icon" type="image/png" href="favicon-32x32.png" sizes="32x32" />
+  <link rel="icon" type="image="png" href="favicon-32x32.png" sizes="32x32" />
   <link rel="icon" type="image/png" href="favicon-16x16.png" sizes="16x16" />
   <link rel="stylesheet" type="text/css" href="swagger-ui.css" />
   <link rel="stylesheet" type="text/css" href="index.css" />
   <style>
-    /* Telegraph branding — minimal, in-repo, no external CSS dependency. */
     html { box-sizing: border-box; }
     *, *::before, *::after { box-sizing: inherit; }
     body { margin: 0; background: #fafafa; }
+
+    /* Branding bar (our own, above Swagger UI) */
     .telegraph-topbar {
       background: #0f172a;
       color: #e2e8f0;
@@ -45,8 +46,37 @@
       font-weight: 500;
     }
     .telegraph-topbar a:hover { text-decoration: underline; }
-    /* Swagger UI's own topbar (the green one) is hidden — we use ours instead. */
-    .swagger-ui .topbar { display: none !important; }
+
+    /* Style the Swagger UI topbar (contains the spec-switcher dropdown)
+       instead of hiding it — this is where users switch between the 5 specs. */
+    .swagger-ui .topbar {
+      background: #1e293b !important;
+      padding: 8px 24px !important;
+      border-bottom: 1px solid #334155 !important;
+    }
+    .swagger-ui .topbar .wrapper { padding: 0 !important; }
+    .swagger-ui .topbar select {
+      background: #0f172a !important;
+      color: #e2e8f0 !important;
+      border: 1px solid #475569 !important;
+      border-radius: 6px !important;
+      padding: 6px 12px !important;
+      font-size: 14px !important;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+      cursor: pointer !important;
+      outline: none !important;
+    }
+    .swagger-ui .topbar select:focus {
+      border-color: #38bdf8 !important;
+    }
+    .swagger-ui .topbar select option {
+      background: #1e293b !important;
+      color: #e2e8f0 !important;
+    }
+    .swagger-ui .topbar .download-url-button,
+    .swagger-ui .topbar .download-url-input {
+      display: none !important;
+    }
     .swagger-ui .info { margin-top: 12px; }
   </style>
 </head>
@@ -55,7 +85,7 @@
     <span class="brand">Telegraph<span class="accent">.</span>API</span>
     <span class="tagline">Permissionless marketplace for verifiable AI inference</span>
     <span class="spacer"></span>
-    <a href="https://github.com/" id="repo-link" target="_blank" rel="noopener">GitHub Repo</a>
+    <a href="https://github.com/0xWick/Telegraph-api-docs" target="_blank" rel="noopener">GitHub Repo</a>
     <a href="specs/miner-dispatcher.yaml" target="_blank" rel="noopener">Raw Specs</a>
   </div>
 
@@ -65,30 +95,30 @@
   <script src="swagger-ui-standalone-preset.js" charset="UTF-8"></script>
   <script>
     (function () {
-      // Spec picker — Swagger UI's built-in `urls` option renders a dropdown
-      // at the top of the rendered spec. The first entry loads by default.
+      // The 5 OpenAPI specs. The topbar dropdown (rendered by Swagger UI's
+      // StandaloneLayout) lets users switch between them. The first entry
+      // loads by default.
       var specs = [
-        { name: "Miner Dispatcher (x402 Bittensor proxy)",  url: "specs/miner-dispatcher.yaml" },
-        { name: "Engine REST + WebSocket",                 url: "specs/engine.yaml" },
-        { name: "Daemon Dashboard Read API",               url: "specs/daemon.yaml" },
-        { name: "Internal Bridge / Node Ops (TSS)",        url: "specs/internal-bridge.yaml" },
-        { name: "Legacy Bittensor Proxy (deprecated)",     url: "specs/bittensor-legacy.yaml" }
+        { name: "Miner Dispatcher (x402 inference proxy)",  url: "specs/miner-dispatcher.yaml" },
+        { name: "Engine REST + WebSocket",                  url: "specs/engine.yaml" },
+        { name: "Daemon Dashboard Read API",                url: "specs/daemon.yaml" },
+        { name: "Internal Bridge / Node Ops (TSS)",         url: "specs/internal-bridge.yaml" },
+        { name: "Legacy Proxy (deprecated)",                url: "specs/bittensor-legacy.yaml" }
       ];
 
       // Persist the chosen spec across reloads via the ?spec= query param.
       var params = new URLSearchParams(window.location.search);
       var requested = params.get("spec");
-      var defaultSpec = specs[0];
+      var defaultUrl = specs[0].url;
       if (requested) {
         var match = specs.find(function (s) { return s.url.indexOf(requested) !== -1; });
-        if (match) defaultSpec = match;
+        if (match) defaultUrl = match.url;
       }
 
       window.onload = function () {
         var ui = SwaggerUIBundle({
           urls: specs,
-          url: defaultSpec.url,
-          name: defaultSpec.name,
+          url: defaultUrl,
           dom_id: "#swagger-ui",
           deepLinking: true,
           docExpansion: "list",
@@ -106,11 +136,11 @@
             SwaggerUIBundle.plugins.DownloadUrl
           ],
           layout: "StandaloneLayout",
-          // Make the spec dropdown reflect the user's choice.
           onComplete: function () {
-            var select = document.querySelector(".swagger-ui select.title");
-            if (select) {
-              // When the user picks a different spec, update the URL.
+            // Sync the URL ?spec= param when the user switches specs.
+            var select = document.querySelector(".swagger-ui select");
+            if (select && !select._tcBound) {
+              select._tcBound = true;
               select.addEventListener("change", function (e) {
                 var chosen = e.target.options[e.target.selectedIndex].text;
                 var match = specs.find(function (s) { return s.name === chosen; });
