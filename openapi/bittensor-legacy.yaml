@@ -44,10 +44,10 @@ info:
     name: MIT
     url: https://opensource.org/licenses/MIT
 servers:
-- url: https://your-stable-domain.com
-  description: Telegraph node (production — deprecated surface)
-- url: http://localhost:7044
-  description: Local development node
+  - url: http://13.237.89.59:7044
+    description: Telegraph testnet node (deprecated surface)
+  - url: http://localhost:7044
+    description: Local development node
 tags:
 - name: Miners (legacy)
   description: Deprecated /api/miners/* proxy endpoints (no x402).

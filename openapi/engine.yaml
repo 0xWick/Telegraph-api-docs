@@ -36,8 +36,8 @@ info:
     name: MIT
     url: https://opensource.org/licenses/MIT
 servers:
-  - url: https://your-stable-domain.com/engine
-    description: Telegraph node (production — replace with your node's domain)
+  - url: http://13.237.89.59:7044/engine
+    description: Telegraph testnet node
   - url: http://localhost:7044/engine
     description: Local development node
 tags:

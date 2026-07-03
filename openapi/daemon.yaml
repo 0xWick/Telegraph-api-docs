@@ -23,8 +23,8 @@ info:
     name: MIT
     url: https://opensource.org/licenses/MIT
 servers:
-  - url: https://your-stable-domain.com/daemon
-    description: Telegraph node (production — replace with your node's domain)
+  - url: http://13.237.89.59:7044/daemon
+    description: Telegraph testnet node
   - url: http://localhost:7044/daemon
     description: Local development node
 tags:
