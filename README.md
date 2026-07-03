@@ -99,6 +99,27 @@ full flow diagrams and code samples.
 
 ---
 
+## Status
+
+All 5 specs pass Spectral lint (0 errors, 0 warnings) and swagger-parser
+validation. The build pipeline produces self-contained bundled specs (no
+external `$ref`s) suitable for direct Swagger UI consumption.
+
+| Spec | Paths | Lint | Validate |
+|---|---|---|---|
+| `openapi/miner-dispatcher.yaml` | 28 | clean | valid |
+| `openapi/engine.yaml` | 11 | clean | valid |
+| `openapi/daemon.yaml` | 4 | clean | valid |
+| `openapi/internal-bridge.yaml` | 37 | clean | valid |
+| `openapi/bittensor-legacy.yaml` | 12 | clean | valid |
+| **Total** | **92 paths** | | |
+
+Documentation: 33 markdown files across 7 sections (`overview`, `http-proxy`,
+`engine-daemon`, `internal-bridge`, `on-chain`, `integration-guides`,
+`archive`).
+
+---
+
 ## License
 
 MIT. See the repository license file.
