@@ -1,0 +1,1750 @@
+openapi: 3.0.3
+info:
+  title: Telegraph Internal Bridge & Node Ops API
+  version: 1.0.0
+  description: |
+    The **internal bridge / node-ops surface** covers the TSS (threshold
+    signature scheme) coordination, transaction management, validator
+    registry, network configuration, blockchain wallet ops, epoch receiver,
+    and scoring endpoints. These are used by node operators, inter-validator
+    coordination, and the dashboard backend.
+
+    ## Authentication
+
+    Four schemes apply, depending on the endpoint:
+
+    - **EIP-191 wallet signature** (`Authorization` header) — write endpoints
+      that mutate on-chain state (transaction create/update, node-index
+      update).
+    - **`X-Internal-Secret`** header — trusted-internal endpoints
+      (`/internal/*`). Shared secret from the `INTERNAL_SECRET` env var. If
+      unset, auth is DISABLED (dev-only — must be set in production).
+    - **Party password** (`X-Party-Password` header) — TSS workflow triggers
+      (`/validator/start`, `/validator/reshare`). Must match the node's
+      `PartyPassword` config.
+    - **None** — all read endpoints (`GET /api/*`, `GET /status`,
+      `GET /scores`, etc.) and inter-validator signing relays
+      (`/returnSigned`, `/requestSignTransaction`).
+
+    ## Rate limiting
+
+    `POST /` (wallet creation) is rate-limited (default 100/min per IP,
+    overridable via `config.MaxConn`).
+
+    ## Caching
+
+    Several read endpoints set `Cache-Control` headers (see per-endpoint
+    notes).
+  contact:
+    name: Telegraph Protocol
+    url: https://github.com/AnomalyFi/Telegraph
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+servers:
+  - url: https://your-stable-domain.com
+    description: Telegraph node (production — replace with your node's domain)
+  - url: http://localhost:7044
+    description: Local development node
+tags:
+  - name: Status
+    description: Node liveness / health (used by peer validators' IsAlive check).
+  - name: Transactions
+    description: Cross-chain transaction management, search, and stats.
+  - name: Validators
+    description: Validator registry + TSS keygen/sign/reshare coordination.
+  - name: Networks
+    description: Chain network configuration CRUD + dashboard stats.
+  - name: Blockchain
+    description: MPC wallet creation, signer registration, and fee queries.
+  - name: Epoch & Internal
+    description: Epoch receiver — delivery logs, epoch-close events (X-Internal-Secret).
+  - name: Scoring
+    description: Epoch scoring results + ground-truth lookup.
+  - name: Static Files
+    description: Static file servers for collector YAMLs and WASM modules.
+components:
+  securitySchemes:
+    eip191:
+      $ref: ../components/security/eip191.yaml
+    internalSecret:
+      $ref: ../components/security/internalSecret.yaml
+    partyPassword:
+      $ref: ../components/security/partyPassword.yaml
+  responses:
+    BadRequest:
+      description: Invalid request body or parameter.
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas/Error.yaml
+          example:
+            error: invalid request body
+            code: invalid_request
+    Unauthorized:
+      description: The `Authorization` / `X-Internal-Secret` / `X-Party-Password` header was missing or invalid.
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas/Error.yaml
+          example:
+            error: "unauthorized: invalid signature"
+            code: unauthorized
+    Forbidden:
+      description: Authenticated but not permitted (e.g. genesis-only endpoint called by non-genesis).
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas/Error.yaml
+          example:
+            error: this node is genesis
+            code: forbidden
+    NotFound:
+      description: Resource not found.
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas/Error.yaml
+          example:
+            error: transaction not found
+            code: not_found
+    TooManyRequests:
+      description: Rate limit exceeded.
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas/Error.yaml
+          example:
+            error: rate limit exceeded
+            code: rate_limited
+    InternalServerError:
+      description: Unexpected internal server error.
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas/Error.yaml
+  parameters:
+    TxHashPath:
+      name: hash
+      in: path
+      required: true
+      description: Transaction hash (`0x`-prefixed 32-byte hex, 66 chars).
+      schema:
+        type: string
+        pattern: ^0x[a-fA-F0-9]{64}$
+        example: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+    AddressPath:
+      name: address
+      in: path
+      required: true
+      description: Ethereum hex address (42 chars, `0x`-prefixed).
+      schema:
+        type: string
+        pattern: ^0x[a-fA-F0-9]{40}$
+        example: "0x71C7656EC7ab88b098defB751B7401B5f6d8976F"
+    IntentIdPathParam:
+      name: intent_id
+      in: path
+      required: true
+      description: Intent identifier.
+      schema:
+        type: string
+        example: WEATHER_FORECAST
+    FilenamePath:
+      name: filename
+      in: path
+      required: true
+      description: The filename (served from `COLLECTORS_YAML_DIR` or `WASM_MODULES_DIR`).
+      schema:
+        type: string
+        example: news-collector.yaml
+  schemas:
+    Transaction:
+      type: object
+      description: A cross-chain bridge transaction (full record, 60+ columns in DB).
+      properties:
+        id:
+          type: string
+          description: UUID.
+        chainId:
+          type: integer
+          description: Source chain ID.
+        destinationChainId:
+          type: integer
+          description: Destination chain ID.
+        hash:
+          type: string
+          description: Bridge transaction hash.
+        addresses:
+          type: array
+          items:
+            type: string
+          description: Participant addresses.
+        event:
+          type: string
+          description: Event type (e.g. `outboundMessage`).
+        fee:
+          type: string
+          description: Fee paid (wei).
+        blockNumber:
+          type: integer
+          format: uint64
+        isConfirmed:
+          type: boolean
+        isSubnetTX:
+          type: boolean
+        timestamp:
+          type: string
+          format: date-time
+      example:
+        id: tx-uuid-001
+        chainId: 8453
+        destinationChainId: 42161
+        hash: 0xabc...
+        event: outboundMessage
+        fee: "10000000000000"
+        blockNumber: 12345678
+        isConfirmed: true
+        isSubnetTX: false
+    RecentTransactionDTO:
+      type: object
+      properties:
+        hash:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        addresses:
+          type: array
+          items:
+            type: string
+        event:
+          type: string
+        fee:
+          type: string
+        blockNumber:
+          type: integer
+          format: uint64
+        isConfirmed:
+          type: boolean
+        isSubnetTX:
+          type: boolean
+    TransactionSummaryDTO:
+      type: object
+      properties:
+        hash:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        event:
+          type: string
+        fee:
+          type: string
+        blockNumber:
+          type: integer
+          format: uint64
+    PaginationDTO:
+      type: object
+      properties:
+        page:
+          type: integer
+          example: 1
+        pageSize:
+          type: integer
+          example: 20
+        totalPages:
+          type: integer
+          example: 5
+    RecentTransactionsResponseDTO:
+      type: object
+      properties:
+        recentTransactions:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecentTransactionDTO"
+        pagination:
+          $ref: "#/components/schemas/PaginationDTO"
+    TodayStatsDTO:
+      type: object
+      properties:
+        transactionsToday:
+          type: integer
+          example: 142
+        lastHundredTransactions:
+          type: array
+          items:
+            $ref: "#/components/schemas/TransactionSummaryDTO"
+    AddressOverviewDTO:
+      type: object
+      properties:
+        address:
+          type: string
+        metadata:
+          type: object
+          properties:
+            name:
+              type: string
+            createdAt:
+              type: string
+              format: date-time
+        nodeId:
+          type: string
+        volume:
+          type: number
+          description: Transaction volume.
+        totalMsgAccumulated:
+          type: string
+        totalMsgClaimed:
+          type: string
+        status:
+          type: string
+    AddressTransactionsDTO:
+      type: object
+      properties:
+        transactions:
+          type: array
+          items:
+            $ref: "#/components/schemas/TransactionSummaryDTO"
+        pagination:
+          $ref: "#/components/schemas/PaginationDTO"
+        totalTransactions:
+          type: integer
+    DailyCountDTO:
+      type: object
+      properties:
+        dailyTransactionCount:
+          type: integer
+          example: 142
+    CountHistoryDTO:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            transactions_by_date:
+              type: array
+              items:
+                type: object
+                properties:
+                  date:
+                    type: string
+                    format: date-time
+                  transaction_count:
+                    type: integer
+    TransactionDetailDTO:
+      type: object
+      description: Detailed transaction data (full record).
+      additionalProperties: true
+    Validator:
+      type: object
+      properties:
+        publicethaddress:
+          type: string
+          description: Validator's Ethereum address (primary key).
+        moniker:
+          type: string
+          description: Human-readable name.
+        lastpingtime:
+          type: string
+          format: date-time
+        domain:
+          type: string
+          description: Validator's reachable domain.
+        ismine:
+          type: boolean
+          description: Whether this validator is the current node.
+        peer_id:
+          type: string
+          description: libp2p peer ID.
+      example:
+        publicethaddress: "0x71C7656EC7ab88b098defB751B7401B5f6d8976F"
+        moniker: node-1
+        domain: https://node1.example.com
+        ismine: false
+        peer_id: 12D3KooW...
+    ValidatorMetricsDTO:
+      type: object
+      properties:
+        address:
+          type: string
+        tokensMined:
+          type: string
+          description: Tokens mined (string for precision).
+        transactionsSigned:
+          type: integer
+        transactionsSubmitted:
+          type: integer
+    TotalValidatorsDTO:
+      type: object
+      properties:
+        totalValidators:
+          type: integer
+          example: 64
+    InfoStruct:
+      type: object
+      description: TSS group party info (for validator params).
+      properties:
+        urlMap:
+          type: object
+          additionalProperties:
+            type: string
+          description: Map of peer ID → sorted IP.
+        partyIDsBytes:
+          type: string
+          format: byte
+          description: Serialized party IDs.
+        index:
+          type: integer
+          description: This node's party index.
+      example:
+        urlMap:
+          12D3KooW...: 1.2.3.4
+        partyIDsBytes: AA==
+        index: 0
+    SignedTransaction:
+      type: object
+      properties:
+        chainId:
+          type: integer
+        signature:
+          type: string
+        accumulatedTime:
+          type: string
+          description: Big-int accumulated time (string for precision).
+    ReturnSignedRequest:
+      type: object
+      properties:
+        sender:
+          type: string
+          description: Sender peer ID.
+        signedTransactions:
+          type: array
+          items:
+            $ref: "#/components/schemas/SignedTransaction"
+      example:
+        sender: 12D3Koo...
+        signedTransactions:
+          - chainId: 8453
+            signature: 0xabc...
+            accumulatedTime: "123456"
+    RequestSignTransactionRequest:
+      type: object
+      properties:
+        chainId:
+          type: integer
+        hash:
+          type: string
+          description: The hash to sign.
+        ip:
+          type: string
+        sender:
+          type: string
+      example:
+        chainId: 8453
+        hash: 0x1234...
+        ip: 1.2.3.4
+        sender: 12D3Koo...
+    RetryRegisterSignerRequest:
+      type: object
+      properties:
+        chainId:
+          type: integer
+      example:
+        chainId: 8453
+    NodeIndexUpdateRequest:
+      type: object
+      properties:
+        nodeIndex:
+          type: integer
+          description: The node index to set as active signer.
+      example:
+        nodeIndex: 3
+    SignRequest:
+      type: object
+      properties:
+        message:
+          type: string
+          description: The big-int message to sign (decimal string).
+      example:
+        message: "12345678901234567890"
+    Network:
+      type: object
+      description: Chain network configuration.
+      properties:
+        id:
+          type: string
+          description: UUID.
+        name:
+          type: string
+          description: Network name (e.g. `Base`).
+        chainId:
+          type: integer
+        rpcUrl:
+          type: string
+        explorerUrl:
+          type: string
+        symbol:
+          type: string
+        enabled:
+          type: boolean
+      example:
+        id: net-uuid-001
+        name: Base
+        chainId: 8453
+        rpcUrl: https://mainnet.base.org
+        symbol: ETH
+        enabled: true
+    DeliveryLog:
+      type: object
+      description: Inbound delivery log from the engine (one per ACK'd signal).
+      properties:
+        agent_address:
+          type: string
+        miner_id:
+          type: string
+        intent_id:
+          type: string
+        usdc_amount:
+          type: integer
+          format: uint64
+          description: USDC amount in micro-units.
+        timestamp:
+          type: integer
+          format: int64
+          description: Unix timestamp.
+        epoch_id:
+          type: integer
+          format: uint32
+        node_signature:
+          type: string
+          format: byte
+          description: Node signature over the log.
+      example:
+        agent_address: 0xabc...
+        miner_id: bittensor-sn18-zeus
+        intent_id: WEATHER_FORECAST
+        usdc_amount: 10000
+        timestamp: 1751548800
+        epoch_id: 42
+        node_signature: AA==
+    EpochCloseEvent:
+      type: object
+      properties:
+        epoch_id:
+          type: integer
+          format: uint32
+        minerUSDC:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Map of miner_id → USDC total.
+        clientUSDC:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Map of client_address → USDC total.
+      example:
+        epoch_id: 42
+        minerUSDC:
+          bittensor-sn18-zeus: 50000
+        clientUSDC:
+          0xabc...: 50000
+    EpochScore:
+      type: object
+      properties:
+        id:
+          type: string
+        epoch_id:
+          type: integer
+          format: uint32
+        intent_id:
+          type: string
+        miner_slug:
+          type: string
+        rank:
+          type: integer
+        score:
+          type: number
+          format: float
+        question:
+          type: string
+        ground_truth:
+          type: string
+        miner_answer:
+          type: string
+        converted_answer:
+          type: string
+        scored_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+    EpochScorePage:
+      type: object
+      properties:
+        scores:
+          type: array
+          items:
+            $ref: "#/components/schemas/EpochScore"
+        total:
+          type: integer
+          format: int64
+        limit:
+          type: integer
+        offset:
+          type: integer
+    GroundTruth:
+      type: object
+      properties:
+        intent_id:
+          type: string
+        question:
+          type: string
+        ground_truth:
+          type: string
+    CurrentEpochDTO:
+      type: object
+      properties:
+        current_epoch:
+          type: integer
+          format: uint32
+          example: 42
+paths:
+  /status:
+    get:
+      operationId: getStatus
+      summary: Node status (liveness check)
+      description: |
+        Returns the node's status. Used by peer validators' `IsAlive` check
+        (validators poll `GET http://<domain>/status` on each other).
+      tags:
+        - Status
+      responses:
+        "200":
+          description: Node status.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                description: Status object (service-defined).
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /:
+    get:
+      operationId: listTransactions
+      summary: List all transactions
+      description: Returns all cross-chain bridge transactions. (Coexists with `POST /` wallet-create via different methods.)
+      tags:
+        - Transactions
+      responses:
+        "200":
+          description: Transaction list.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Transaction"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    post:
+      operationId: createWallet
+      summary: Create a new MPC wallet (rate-limited)
+      description: |
+        Triggers TSS distributed key generation to create a new MPC wallet.
+        Rate-limited (default 100/min per IP; overridable via
+        `config.MaxConn`).
+      tags:
+        - Blockchain
+      responses:
+        "200":
+          description: New wallet object.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                description: Wallet object (service-defined).
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /create:
+    post:
+      operationId: createTransaction
+      summary: Create a cross-chain transaction
+      description: |
+        Creates a transaction from a JSON body and forwards it to the
+        multisig signing flow.
+      tags:
+        - Transactions
+      security:
+        - eip191: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              description: Transaction JSON (raw bytes forwarded to the service).
+            example:
+              chainId: 8453
+              destinationChainId: 42161
+              amount: "1000000"
+      responses:
+        "200":
+          description: Creation started.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: Transaction Create started
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /update:
+    put:
+      operationId: updateTransaction
+      summary: Update a transaction
+      description: Updates a transaction. Forwards to the multisig signing flow.
+      tags:
+        - Transactions
+      security:
+        - eip191: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+            example: {}
+      responses:
+        "200":
+          description: Update started.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: Transaction Update started
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /nodeIndex/update:
+    post:
+      operationId: updateNodeIndex
+      summary: Update the active signer node index
+      description: |
+        Updates which validator is the current active signer. Validates the
+        index range and that the target validator is alive.
+      tags:
+        - Transactions
+      security:
+        - eip191: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NodeIndexUpdateRequest"
+            example:
+              nodeIndex: 3
+      responses:
+        "200":
+          description: Node index updated.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: Node index updated
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /returnSigned:
+    post:
+      operationId: returnSigned
+      summary: Receive signed registration transactions from a peer validator
+      description: |
+        HTTP path for receiving signed registration transactions from another
+        validator (P2P path also exists). Asynchronously calls
+        `RegisterSigner`.
+      tags:
+        - Transactions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReturnSignedRequest"
+            example:
+              sender: 12D3Koo...
+              signedTransactions:
+                - chainId: 8453
+                  signature: 0xabc...
+                  accumulatedTime: "123456"
+      responses:
+        "200":
+          description: Signed transactions received.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: Signed transactions received
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /retryRegisterSigner:
+    post:
+      operationId: retryRegisterSigner
+      summary: Retry the on-chain RegisterSigner call
+      description: Retries the `RegisterSigner` on-chain call for a chain ID using stored signatures.
+      tags:
+        - Transactions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RetryRegisterSignerRequest"
+            example:
+              chainId: 8453
+      responses:
+        "200":
+          description: Retry initiated.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: Retry Register Signer initiated with 3 transactions
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /requestSignTransaction:
+    post:
+      operationId: requestSignTransaction
+      summary: Request a TSS signing operation
+      description: |
+        Requests a signing operation. The service routes via P2P or HTTP to
+        the responsible validator.
+      tags:
+        - Transactions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RequestSignTransactionRequest"
+            example:
+              chainId: 8453
+              hash: 0x1234...
+              ip: 1.2.3.4
+              sender: 12D3Koo...
+      responses:
+        "200":
+          description: Request initiated.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: Sign transaction request initiated
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /api/transactions/recent:
+    get:
+      operationId: getRecentTransactions
+      summary: Recent transactions (paginated, searchable)
+      description: Returns paginated recent transactions with optional search.
+      tags:
+        - Transactions
+      parameters:
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Recent transactions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecentTransactionsResponseDTO"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /api/search/{hash}:
+    get:
+      operationId: searchTransactionByHash
+      summary: Search a transaction by hash
+      description: "Searches a single transaction by hash. `Cache-Control: public, max-age=86400`."
+      tags:
+        - Transactions
+      parameters:
+        - $ref: "#/components/parameters/TxHashPath"
+      responses:
+        "200":
+          description: Transaction found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  transaction:
+                    $ref: "#/components/schemas/RecentTransactionDTO"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /api/transaction/{hash}:
+    get:
+      operationId: getTransactionDetail
+      summary: Detailed transaction data by hash
+      description: "Returns detailed transaction data. `Cache-Control: public, max-age=86400`."
+      tags:
+        - Transactions
+      parameters:
+        - $ref: "#/components/parameters/TxHashPath"
+      responses:
+        "200":
+          description: Transaction detail.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  transaction:
+                    $ref: "#/components/schemas/TransactionDetailDTO"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /api/network/stats/today:
+    get:
+      operationId: getTodayStats
+      summary: Today's transaction stats
+      description: "Today's transaction stats (5s timeout). `Cache-Control: no-cache, max-age=60`."
+      tags:
+        - Transactions
+      responses:
+        "200":
+          description: Today's stats.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TodayStatsDTO"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /api/address/{address}/overview:
+    get:
+      operationId: getAddressOverview
+      summary: Address overview
+      description: "Overview for an address. `Cache-Control: public, max-age=300`."
+      tags:
+        - Transactions
+      parameters:
+        - $ref: "#/components/parameters/AddressPath"
+      responses:
+        "200":
+          description: Address overview.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AddressOverviewDTO"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /api/address/{address}/transactions:
+    get:
+      operationId: getAddressTransactions
+      summary: Address transactions (paginated)
+      description: "Paginated transactions for an address. `Cache-Control: public, max-age=60`."
+      tags:
+        - Transactions
+      parameters:
+        - $ref: "#/components/parameters/AddressPath"
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Address transactions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AddressTransactionsDTO"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /api/transactions/dailyTransactionCount:
+    get:
+      operationId: getDailyTransactionCount
+      summary: Count of transactions in the last 24h
+      description: "Count of transactions in the last 24 hours. `Cache-Control: public, max-age=60`."
+      tags:
+        - Transactions
+      responses:
+        "200":
+          description: Daily count.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DailyCountDTO"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /api/transactions/countHistory:
+    get:
+      operationId: getTransactionCountHistory
+      summary: Daily transaction counts (last N days)
+      description: "Daily transaction counts for the last N days. `Cache-Control: public, max-age=3600`."
+      tags:
+        - Transactions
+      parameters:
+        - name: days
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 90
+            default: 30
+      responses:
+        "200":
+          description: Count history.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CountHistoryDTO"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /validator:
+    get:
+      operationId: getMyValidator
+      summary: Get this node's validator record
+      description: Returns this node's own validator record. Returns `null` on service error.
+      tags:
+        - Validators
+      responses:
+        "200":
+          description: Validator record (or null on service error).
+          content:
+            application/json:
+              schema:
+                nullable: true
+                allOf:
+                  - $ref: "#/components/schemas/Validator"
+  /validator/params:
+    post:
+      operationId: addValidatorParams
+      summary: Add validator parameters (TSS party info)
+      description: >-
+        Adds validator parameters (party info for the TSS group). The genesis-only / party-password checks are currently
+        commented out in code.
+      tags:
+        - Validators
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Validator"
+            example:
+              publicethaddress: "0x71C7656EC7ab88b098defB751B7401B5f6d8976F"
+              moniker: node-1
+              domain: https://node1.example.com
+              ismine: false
+              peer_id: 12D3KooW...
+      responses:
+        "200":
+          description: Params added.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: Validator Params Added
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    put:
+      operationId: updateValidatorParams
+      summary: Update validator params (TSS group sync)
+      description: |
+        Updates/replaces validator params (party IDs, URL map) — called by
+        the genesis node to sync the TSS group state. **Only non-genesis
+        nodes accept** (returns 400 if `IsGenesis`).
+      tags:
+        - Validators
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InfoStruct"
+            example:
+              urlMap:
+                12D3KooW...: 1.2.3.4
+              partyIDsBytes: AA==
+              index: 0
+      responses:
+        "200":
+          description: Params updated.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: Validator Params Updated
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /validator/start:
+    post:
+      operationId: startValidator
+      summary: Start a TSS keygen workflow
+      description: |
+        Starts a TSS distributed key generation workflow. On genesis nodes,
+        it propagates to all peers then starts local keygen.
+      tags:
+        - Validators
+      security:
+        - partyPassword: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              description: Full config.Config JSON (≤1MB).
+            example: {}
+      responses:
+        "200":
+          description: Validator started.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: Validator Started
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /validator/sign:
+    post:
+      operationId: signValidator
+      summary: Start a TSS keysign for a message
+      description: |
+        Starts a TSS keysign for a message (big int). Genesis propagates to
+        peers then starts local keysign.
+      tags:
+        - Validators
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SignRequest"
+            example:
+              message: "12345678901234567890"
+      responses:
+        "200":
+          description: Keysign started.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: Keysign started
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /validator/update:
+    post:
+      operationId: updateValidator
+      summary: Apply a TSS update (raw bytes)
+      description: Applies a TSS update from bytes (asynchronous).
+      tags:
+        - Validators
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              description: Raw TSS update bytes (≤1MB).
+      responses:
+        "200":
+          description: Update started.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: Update started
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /validator/reshare:
+    post:
+      operationId: reshareValidator
+      summary: Start a TSS reshare workflow
+      description: |
+        Starts a TSS key resharing workflow for validator set changes.
+        Genesis propagates to peers then starts local reshare.
+      tags:
+        - Validators
+      security:
+        - partyPassword: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              description: Full config.Config JSON (≤1MB).
+            example: {}
+      responses:
+        "200":
+          description: Keygen started (reshare).
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: Keygen started
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /api/validators:
+    get:
+      operationId: getAllValidators
+      summary: All validators with on-chain metrics
+      description: |
+        Returns all validators with on-chain metrics, optional search filter.
+        `Cache-Control: no-cache, max-age=300`.
+      tags:
+        - Validators
+      parameters:
+        - name: search
+          in: query
+          required: false
+          description: Matches address or moniker (case-insensitive).
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Validators with metrics.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  validators:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ValidatorMetricsDTO"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /api/validator/{address}:
+    get:
+      operationId: getValidator
+      summary: Single validator with metrics by address
+      description: "Returns a single validator with metrics by address. `Cache-Control: no-cache, max-age=60`."
+      tags:
+        - Validators
+      parameters:
+        - $ref: "#/components/parameters/AddressPath"
+      responses:
+        "200":
+          description: Validator with metrics.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  validator:
+                    $ref: "#/components/schemas/ValidatorMetricsDTO"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /api/totalValidators:
+    get:
+      operationId: getTotalValidators
+      summary: Total validator count
+      description: "Returns the total validator count. `Cache-Control: public, max-age=60`."
+      tags:
+        - Validators
+      responses:
+        "200":
+          description: Total count.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TotalValidatorsDTO"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /network:
+    get:
+      operationId: getNetworks
+      summary: List all configured networks
+      description: Returns all configured chain networks.
+      tags:
+        - Networks
+      responses:
+        "200":
+          description: Network list.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Network"
+    post:
+      operationId: addNetwork
+      summary: Add a new network
+      description: Adds a new chain network.
+      tags:
+        - Networks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Network"
+            example:
+              id: net-uuid-001
+              name: Base
+              chainId: 8453
+              rpcUrl: https://mainnet.base.org
+              symbol: ETH
+              enabled: true
+      responses:
+        "200":
+          description: Network added.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: New Network Added
+    put:
+      operationId: updateNetwork
+      summary: Update a network
+      description: Updates an existing chain network.
+      tags:
+        - Networks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Network"
+            example:
+              id: net-uuid-001
+              name: Base
+              chainId: 8453
+              rpcUrl: https://mainnet.base.org
+              symbol: ETH
+              enabled: true
+      responses:
+        "200":
+          description: Network updated.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: Network Updated
+    delete:
+      operationId: removeNetwork
+      summary: Remove a network
+      description: Removes a chain network by ID.
+      tags:
+        - Networks
+      parameters:
+        - name: id
+          in: query
+          required: true
+          description: The network ID to remove.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Network removed.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: Network Removed
+  /api/network/stats:
+    get:
+      operationId: getNetworkStats
+      summary: Aggregated network statistics
+      description: >-
+        Aggregated network statistics (10s timeout). `Cache-Control: no-cache, max-age=60`. Sets `X-Stats-Warning:
+        Partial data` header on partial failure.
+      tags:
+        - Networks
+      responses:
+        "200":
+          description: Network stats.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                description: Network stats object (service-defined).
+          headers:
+            X-Stats-Warning:
+              schema:
+                type: string
+              description: Set to "Partial data" when some subsystems fail.
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /api/network/stats/lifetime:
+    get:
+      operationId: getLifetimeStats
+      summary: Lifetime network statistics
+      description: "Lifetime network statistics (10s timeout, blockchain queries). `Cache-Control: no-cache, max-age=300`."
+      tags:
+        - Networks
+      responses:
+        "200":
+          description: Lifetime stats.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /signer:
+    get:
+      operationId: isWalletSigner
+      summary: Check if this node's wallet is a registered signer
+      description: Checks if this node's wallet is a registered signer on-chain.
+      tags:
+        - Blockchain
+      responses:
+        "200":
+          description: Signer status.
+          content:
+            application/json:
+              schema:
+                type: boolean
+                example: true
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    post:
+      operationId: startRegistration
+      summary: Start on-chain signer registration
+      description: Starts the on-chain signer registration workflow.
+      tags:
+        - Blockchain
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+            example: {}
+      responses:
+        "200":
+          description: Registration started.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /fees:
+    get:
+      operationId: getFees
+      summary: Fetch current chain fees
+      description: Fetches current chain fees.
+      tags:
+        - Blockchain
+      responses:
+        "200":
+          description: Fees.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /internal/delivery:
+    post:
+      operationId: postDelivery
+      summary: Inbound delivery log (engine → epoch receiver)
+      description: |
+        Inbound delivery log from the engine — one per ACK'd signal. Enqueues
+        into the epoch service for settlement.
+      tags:
+        - Epoch & Internal
+      security:
+        - internalSecret: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeliveryLog"
+            example:
+              agent_address: 0xabc...
+              miner_id: bittensor-sn18-zeus
+              intent_id: WEATHER_FORECAST
+              usdc_amount: 10000
+              timestamp: 1751548800
+              epoch_id: 42
+              node_signature: AA==
+      responses:
+        "202":
+          description: Delivery accepted.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: accepted
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          description: Delivery buffer full — try again later.
+          content:
+            application/json:
+              schema:
+                $ref: ../components/schemas/Error.yaml
+              example:
+                error: delivery buffer full
+                code: buffer_full
+  /internal/epoch-close:
+    post:
+      operationId: postEpochClose
+      summary: Epoch boundary event (engine → epoch receiver)
+      description: Epoch boundary event from the engine (triggers on-chain settlement submit).
+      tags:
+        - Epoch & Internal
+      security:
+        - internalSecret: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EpochCloseEvent"
+            example:
+              epoch_id: 42
+              minerUSDC:
+                bittensor-sn18-zeus: 50000
+              clientUSDC:
+                0xabc...: 50000
+      responses:
+        "202":
+          description: Epoch-close accepted.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: accepted
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          description: Epoch-close channel full.
+          content:
+            application/json:
+              schema:
+                $ref: ../components/schemas/Error.yaml
+  /internal/epoch/current:
+    get:
+      operationId: getCurrentEpoch
+      summary: Current epoch number
+      description: Returns the current epoch number (health/debug).
+      tags:
+        - Epoch & Internal
+      security:
+        - internalSecret: []
+      responses:
+        "200":
+          description: Current epoch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CurrentEpochDTO"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /scores:
+    get:
+      operationId: getEpochScores
+      summary: Epoch scoring results (paginated)
+      description: Returns paginated epoch scoring results (miner scores per intent per epoch).
+      tags:
+        - Scoring
+      parameters:
+        - name: epoch
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: uint32
+        - name: intent
+          in: query
+          required: false
+          schema:
+            type: string
+            example: CHAT_COMPLETION
+        - name: miner
+          in: query
+          required: false
+          schema:
+            type: string
+            example: bittensor-sn18-zeus
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        "200":
+          description: Epoch scores.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EpochScorePage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /groundtruths/{intent_id}:
+    get:
+      operationId: getGroundTruth
+      summary: Get ground-truth question + reference answer for an intent
+      description: |
+        Returns the ground-truth question + reference answer for an intent
+        (read from the `ground_truths` table). Used by the epoch scorer.
+      tags:
+        - Scoring
+      parameters:
+        - $ref: "#/components/parameters/IntentIdPathParam"
+      responses:
+        "200":
+          description: Ground truth.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GroundTruth"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /collectors/{filename}:
+    get:
+      operationId: getCollectorYaml
+      summary: Static collector YAML file
+      description: |
+        Static file server for collector YAML files (so on-chain
+        registrations can reference `http://node/collectors/<name>.yaml`).
+        Only mounted if `COLLECTORS_YAML_DIR` env is set.
+      tags:
+        - Static Files
+      parameters:
+        - $ref: "#/components/parameters/FilenamePath"
+      responses:
+        "200":
+          description: The file contents.
+          content:
+            application/yaml:
+              schema:
+                type: string
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /wasm/{filename}:
+    get:
+      operationId: getWasmModule
+      summary: Static WASM module file
+      description: |
+        Static file server for WASM binaries. Only mounted if
+        `WASM_MODULES_DIR` env is set.
+      tags:
+        - Static Files
+      parameters:
+        - $ref: "#/components/parameters/FilenamePath"
+      responses:
+        "200":
+          description: The WASM binary.
+          content:
+            application/wasm:
+              schema:
+                type: string
+                format: binary
+        "404":
+          $ref: "#/components/responses/NotFound"
