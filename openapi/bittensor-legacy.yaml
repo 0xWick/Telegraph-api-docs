@@ -1,0 +1,739 @@
+openapi: 3.0.3
+info:
+  title: Telegraph Legacy Bittensor Proxy API (Deprecated)
+  version: 0.9.0
+  description: '**DEPRECATED.** This is the older non-x402 `/api/miners/*` and
+
+    `/api/subnets/*` proxy from the legacy bittensor module. It is superseded
+
+    by the **miner-dispatcher** x402-gated proxy documented in
+
+    `openapi/miner-dispatcher.yaml`.
+
+
+    Use the miner-dispatcher (`/miner-dispatcher/v1/{subnet}/{proxyPath}`)
+
+    instead. This legacy proxy has **no payment gating** and routes
+
+    directly to the subnet''s upstream API via the legacy dynamic-proxy
+
+    handler.
+
+
+    Both `/api/miners/{id}/*` and `/api/subnets/{id}/*` are documented here
+
+    as aliases (the handler is the same). Use either prefix interchangeably.
+
+
+    ## Authentication
+
+
+    None. The legacy proxy is unauthenticated.
+
+
+    ## Supported subnets
+
+
+    SN1, SN18, SN19, SN20, SN22, SN32, SN34, SN42, SN64, SN101, SN102.
+
+    '
+  contact:
+    name: Telegraph Protocol
+    url: https://github.com/AnomalyFi/Telegraph
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+servers:
+- url: https://your-stable-domain.com
+  description: Telegraph node (production — deprecated surface)
+- url: http://localhost:7044
+  description: Local development node
+tags:
+- name: Miners (legacy)
+  description: Deprecated /api/miners/* proxy endpoints (no x402).
+- name: Subnets (legacy)
+  description: Deprecated /api/subnets/* alias endpoints (same as /api/miners/*).
+components:
+  responses:
+    BadRequest:
+      description: Invalid path/ID/body.
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas/Error.yaml
+          example:
+            error: invalid subnet id
+            code: invalid_request
+    NotFound:
+      description: Subnet or endpoint not found, or upstream returned 404.
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas/Error.yaml
+          example:
+            error: subnet not found
+            code: not_found
+    UpstreamError:
+      description: Upstream returned an error (401/403/422/500 etc.). The legacy proxy passes these through.
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas/Error.yaml
+          example:
+            error: 'upstream error: 500'
+            code: upstream_error
+    InternalServerError:
+      description: Proxy failed.
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas/Error.yaml
+  parameters:
+    SubnetIdPath:
+      name: id
+      in: path
+      required: true
+      description: 'Bittensor subnet ID (integer). Supported: 1, 18, 19, 20, 22, 32, 34,
+
+        42, 64, 101, 102.
+
+        '
+      schema:
+        type: integer
+        example: 18
+    EndpointPath:
+      name: endpointPath
+      in: path
+      required: true
+      description: 'The trailing sub-endpoint path to forward to the upstream subnet
+
+        (includes the leading slash, e.g. `/chat`, `/predict`).
+
+        '
+      schema:
+        type: string
+        example: /predict
+    RequestIdPath:
+      name: requestId
+      in: path
+      required: true
+      description: UUID of a logged subnet request.
+      schema:
+        type: string
+        format: uuid
+        example: 550e8400-e29b-41d4-a716-446655440000
+  schemas:
+    SubnetConfig:
+      type: object
+      description: A subnet configuration row from the `subnet_config` DB table.
+      properties:
+        subnet_id:
+          type: integer
+          description: Bittensor subnet ID.
+        name:
+          type: string
+          description: Human-readable subnet name.
+        base_url:
+          type: string
+          description: Upstream base URL.
+        enabled:
+          type: boolean
+        timeout_ms:
+          type: integer
+          description: Upstream call timeout in milliseconds.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      example:
+        subnet_id: 18
+        name: Zeus Weather Forecasting
+        base_url: https://api.zeus.predict
+        enabled: true
+        timeout_ms: 30000
+        created_at: '2026-06-26T23:15:00Z'
+        updated_at: '2026-07-03T01:46:00Z'
+    SubnetRequest:
+      type: object
+      description: A logged subnet request (audit log entry).
+      properties:
+        id:
+          type: string
+          format: uuid
+        subnet_id:
+          type: integer
+        endpoint:
+          type: string
+          description: The sub-endpoint path called.
+        method:
+          type: string
+        status:
+          type: integer
+        duration_ms:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: healthy
+        available_miners:
+          type: integer
+          example: 11
+        timestamp:
+          type: string
+          format: date-time
+          description: Hardcoded timestamp for legacy compatibility.
+paths:
+  /api/miners:
+    get:
+      operationId: getAvailableSubnets
+      summary: List all enabled subnets (legacy)
+      description: 'Lists all enabled subnets from the `subnet_config` DB table. Mirrors
+
+        `/api/subnets`. DEPRECATED — use the miner-dispatcher discovery
+
+        endpoints instead.
+
+        '
+      tags:
+      - Miners (legacy)
+      deprecated: true
+      responses:
+        '200':
+          description: List of enabled subnet configs.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SubnetConfig'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/miners/health:
+    get:
+      operationId: getMinersHealth
+      summary: Miners health check (legacy)
+      description: Returns the count of available (enabled) miners.
+      tags:
+      - Miners (legacy)
+      deprecated: true
+      responses:
+        '200':
+          description: Health.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: healthy
+                available_miners: 11
+                timestamp: '2024-01-01T00:00:00Z'
+        '503':
+          description: Service unavailable.
+  /api/miners/requests/{requestId}:
+    get:
+      operationId: getRequestById
+      summary: Fetch a logged subnet request by ID (legacy)
+      description: Fetches a specific logged subnet request by UUID.
+      tags:
+      - Miners (legacy)
+      deprecated: true
+      parameters:
+      - $ref: '#/components/parameters/RequestIdPath'
+      responses:
+        '200':
+          description: Logged request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubnetRequest'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/miners/{id}:
+    get:
+      operationId: getSubnetConfig
+      summary: Get a subnet configuration (legacy)
+      description: Returns a subnet's configuration.
+      tags:
+      - Miners (legacy)
+      deprecated: true
+      parameters:
+      - $ref: '#/components/parameters/SubnetIdPath'
+      responses:
+        '200':
+          description: Subnet config.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubnetConfig'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/miners/{id}/history:
+    get:
+      operationId: getRequestHistory
+      summary: Request history for a subnet (legacy)
+      description: Returns logged requests for a subnet.
+      tags:
+      - Miners (legacy)
+      deprecated: true
+      parameters:
+      - $ref: '#/components/parameters/SubnetIdPath'
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 100
+      responses:
+        '200':
+          description: Request history.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SubnetRequest'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/miners/{id}/{endpointPath}:
+    get:
+      operationId: proxyToSubnetGetLegacy
+      summary: Dynamic proxy to a subnet upstream (legacy, GET)
+      description: 'The legacy dynamic proxy. Forwards method/path/body to the subnet''s
+
+        upstream API via `DynamicProxyCall`. DEPRECATED — use the
+
+        miner-dispatcher x402-gated proxy instead.
+
+
+        For SN34, treats form values starting with `http(s)://` as URLs.
+
+        '
+      tags:
+      - Miners (legacy)
+      deprecated: true
+      parameters:
+      - $ref: '#/components/parameters/SubnetIdPath'
+      - $ref: '#/components/parameters/EndpointPath'
+      responses:
+        '200':
+          description: The upstream subnet's response.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/UpstreamError'
+        '403':
+          $ref: '#/components/responses/UpstreamError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UpstreamError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    post:
+      operationId: proxyToSubnetPostLegacy
+      summary: Dynamic proxy to a subnet upstream (legacy, POST)
+      description: POST variant of the legacy dynamic proxy.
+      tags:
+      - Miners (legacy)
+      deprecated: true
+      parameters:
+      - $ref: '#/components/parameters/SubnetIdPath'
+      - $ref: '#/components/parameters/EndpointPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+            example:
+              query: legacy search
+          multipart/form-data:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: The upstream subnet's response.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    put:
+      operationId: proxyToSubnetPutLegacy
+      summary: Dynamic proxy to a subnet upstream (legacy, PUT)
+      description: PUT variant of the legacy dynamic proxy.
+      tags:
+      - Miners (legacy)
+      deprecated: true
+      parameters:
+      - $ref: '#/components/parameters/SubnetIdPath'
+      - $ref: '#/components/parameters/EndpointPath'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+            example:
+              field: value
+      responses:
+        '200':
+          description: The upstream subnet's response.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    delete:
+      operationId: proxyToSubnetDeleteLegacy
+      summary: Dynamic proxy to a subnet upstream (legacy, DELETE)
+      description: DELETE variant of the legacy dynamic proxy.
+      tags:
+      - Miners (legacy)
+      deprecated: true
+      parameters:
+      - $ref: '#/components/parameters/SubnetIdPath'
+      - $ref: '#/components/parameters/EndpointPath'
+      responses:
+        '200':
+          description: The upstream subnet's response.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    patch:
+      operationId: proxyToSubnetPatchLegacy
+      summary: Dynamic proxy to a subnet upstream (legacy, PATCH)
+      description: PATCH variant of the legacy dynamic proxy.
+      tags:
+      - Miners (legacy)
+      deprecated: true
+      parameters:
+      - $ref: '#/components/parameters/SubnetIdPath'
+      - $ref: '#/components/parameters/EndpointPath'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+            example:
+              op: replace
+              path: /status
+              value: active
+      responses:
+        '200':
+          description: The upstream subnet's response.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/subnets:
+    get:
+      operationId: getAvailableSubnetsAlias
+      summary: List all enabled subnets (legacy alias /api/subnets)
+      description: Legacy alias for `GET /api/miners` — same handler.
+      tags:
+      - Subnets (legacy)
+      deprecated: true
+      responses:
+        '200':
+          description: List of enabled subnet configs.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SubnetConfig'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/subnets/health:
+    get:
+      operationId: getSubnetsHealthAlias
+      summary: Subnets health check (legacy alias)
+      description: Legacy alias for `GET /api/miners/health` — same handler.
+      tags:
+      - Subnets (legacy)
+      deprecated: true
+      responses:
+        '200':
+          description: Health.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: Service unavailable.
+  /api/subnets/requests/{requestId}:
+    get:
+      operationId: getRequestByIdAlias
+      summary: Fetch a logged subnet request by ID (legacy alias)
+      description: Legacy alias for `GET /api/miners/requests/{requestId}`.
+      tags:
+      - Subnets (legacy)
+      deprecated: true
+      parameters:
+      - $ref: '#/components/parameters/RequestIdPath'
+      responses:
+        '200':
+          description: Logged request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubnetRequest'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/subnets/{id}:
+    get:
+      operationId: getSubnetConfigAlias
+      summary: Get a subnet configuration (legacy alias)
+      description: Legacy alias for `GET /api/miners/{id}`.
+      tags:
+      - Subnets (legacy)
+      deprecated: true
+      parameters:
+      - $ref: '#/components/parameters/SubnetIdPath'
+      responses:
+        '200':
+          description: Subnet config.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubnetConfig'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/subnets/{id}/history:
+    get:
+      operationId: getRequestHistoryAlias
+      summary: Request history for a subnet (legacy alias)
+      description: Legacy alias for `GET /api/miners/{id}/history`.
+      tags:
+      - Subnets (legacy)
+      deprecated: true
+      parameters:
+      - $ref: '#/components/parameters/SubnetIdPath'
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 100
+      responses:
+        '200':
+          description: Request history.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SubnetRequest'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/subnets/{id}/{endpointPath}:
+    get:
+      operationId: proxyToSubnetGetLegacyAlias
+      summary: Dynamic proxy to a subnet upstream (legacy alias, GET)
+      description: Legacy alias for `GET /api/miners/{id}/{endpointPath}`.
+      tags:
+      - Subnets (legacy)
+      deprecated: true
+      parameters:
+      - $ref: '#/components/parameters/SubnetIdPath'
+      - $ref: '#/components/parameters/EndpointPath'
+      responses:
+        '200':
+          description: The upstream subnet's response.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    post:
+      operationId: proxyToSubnetPostLegacyAlias
+      summary: Dynamic proxy to a subnet upstream (legacy alias, POST)
+      description: Legacy alias for `POST /api/miners/{id}/{endpointPath}`.
+      tags:
+      - Subnets (legacy)
+      deprecated: true
+      parameters:
+      - $ref: '#/components/parameters/SubnetIdPath'
+      - $ref: '#/components/parameters/EndpointPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+            example:
+              query: legacy search
+          multipart/form-data:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: The upstream subnet's response.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    put:
+      operationId: proxyToSubnetPutLegacyAlias
+      summary: Dynamic proxy to a subnet upstream (legacy alias, PUT)
+      description: Legacy alias for `PUT /api/miners/{id}/{endpointPath}`.
+      tags:
+      - Subnets (legacy)
+      deprecated: true
+      parameters:
+      - $ref: '#/components/parameters/SubnetIdPath'
+      - $ref: '#/components/parameters/EndpointPath'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+            example:
+              field: value
+      responses:
+        '200':
+          description: The upstream subnet's response.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    delete:
+      operationId: proxyToSubnetDeleteLegacyAlias
+      summary: Dynamic proxy to a subnet upstream (legacy alias, DELETE)
+      description: Legacy alias for `DELETE /api/miners/{id}/{endpointPath}`.
+      tags:
+      - Subnets (legacy)
+      deprecated: true
+      parameters:
+      - $ref: '#/components/parameters/SubnetIdPath'
+      - $ref: '#/components/parameters/EndpointPath'
+      responses:
+        '200':
+          description: The upstream subnet's response.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    patch:
+      operationId: proxyToSubnetPatchLegacyAlias
+      summary: Dynamic proxy to a subnet upstream (legacy alias, PATCH)
+      description: Legacy alias for `PATCH /api/miners/{id}/{endpointPath}`.
+      tags:
+      - Subnets (legacy)
+      deprecated: true
+      parameters:
+      - $ref: '#/components/parameters/SubnetIdPath'
+      - $ref: '#/components/parameters/EndpointPath'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+            example:
+              op: replace
+              path: /status
+              value: active
+      responses:
+        '200':
+          description: The upstream subnet's response.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
